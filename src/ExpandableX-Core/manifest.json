@@ -1,0 +1,18 @@
+{
+  "Version": "0.1.0",
+  "Description": "Library mod providing the ExpandableX framework: registry, layouts, and game hooks for adding expandability to Shapez 2 buildings.",
+  "Author": "Stefan VDV",
+  "SavedModVersionCompabilityRangeWithSelf": "<1.0.0",
+  "GameVersionSupportRange": "*",
+  "AffectsSaveGames": false,
+  "DisablesAchievements": false,
+  "Conflicts": [],
+  "Assemblies": ["ExpandableX-Core.dll"],
+  "Dependencies": [
+    {
+      "ModId": "steam:3542611357",
+      "ModTitle": "Shapez Shifter",
+      "Version": "1.0.*"
+    }
+  ]
+}
