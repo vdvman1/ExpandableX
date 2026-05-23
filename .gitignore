@@ -427,3 +427,8 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Project-specific: local reference copies of third-party docs (not redistributed)
+docs/Shapez 2 Modding Documentation _ Notion.html
+docs/Shapez 2 Modding Documentation _ Notion_files/
+
