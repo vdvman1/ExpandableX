@@ -43,6 +43,8 @@ The framework itself supports more than this slice exercises; subsequent release
   - [ADR-0003](./docs/adr/0003-register-per-buildingdefinition-variant-pair.md) — (superseded by ADR-0005) original (`BuildingDefinition`, `Variant`) framing, kept for history
   - [ADR-0004](./docs/adr/0004-dynamic-layout-as-sibling-to-static-layout.md) — `DynamicLayout` as a sibling concept to `StaticLayout`
   - [ADR-0005](./docs/adr/0005-register-per-metabuildingdefinition-with-dual-implementation.md) — registration per `MetaBuildingDefinition`; static layouts swap, dynamic layouts compose
+  - [ADR-0006](./docs/adr/0006-join-connectors-for-dynamic-layout-matching.md) — `DynamicLayout` uses dedicated join connectors on top of Shapez's `BuildingPathSimulationSystem`
+  - [ADR-0007](./docs/adr/0007-head-body-tail-singleton-with-phantom-up-joins.md) — `DynamicLayout` uses head/body/tail/singleton roles with phantom Up-facing joins on ends
 - [docs/research/](./docs/research/) — notes from decompiling the game to ground design decisions:
   - [shapez2-internals.md](./docs/research/shapez2-internals.md) — findings about Shapez 2's building model, connector layout, and pattern-matching
 

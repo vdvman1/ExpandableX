@@ -78,16 +78,171 @@ These remain unverified or only partially understood:
 - (e) Connector-to-side mapping — find `BuildingItemInput`/`Output`/`BeltPort*` definitions to see what positional fields they carry.
 - (g) Stability of `MetaBuildingDefinition` ids across game versions — likely the `Id` string field, but stability over time isn't verifiable from a single snapshot.
 
-## Initial Shifter source survey (in progress)
+## Simulation systems — confirmed mechanism
 
-ShapezShifter cloned to `.decompiled/ShapezShifter/` (gitignored). Layout:
+ShapezShifter cloned to `.decompiled/ShapezShifter/` (gitignored). Combined with decompiling `Game.Orchestration.BuiltinSimulationSystems`, the picture is:
 
-- `src/ShapezShifter.Flow/` — the fluent public API mods use. Contains `AtomicExtender/` (single-building extensions), `Building/`, `BuildingGroup/`, `ConnectorData/`, `Island/`, `IslandGroup/`, `Toolbar/`, `Translation/`, `Tick/`, `SaveData/`, `Console/`. **No `MultiBuildingExtender` / `CompoundExtender` is visible at this level** — the public API appears to cover atomic (single-building) extension only.
-- `src/ShapezShifter.Hijack/` — the lower-level patch surface. `GameHijackers/Simulation/` contains `ISimulationSystemsRewirer.cs`, `SimulationSystemsDependencies.cs`, `SimulationSystemsInterceptor.cs` — the names suggest this is the seam where we'd intercept simulation-system creation. Also `Placement/`, `Predictions/`, `Buildings/`, `Islands/` patch surfaces.
+### How Shapez creates simulation systems
 
-**Working hypothesis** for ExpandableX implementation paths:
+`Game.Orchestration.BuiltinSimulationSystems.CreateSimulationSystems()` is the single factory that produces all the in-game `ISimulationSystem` instances. It calls private `CreateXxxSystems()` methods per building family. The key shape:
 
-- **`StaticLayout` (swap)** — likely achievable via the Flow `AtomicExtender` for any new `MetaBuildingDefinition`s we author, plus a swap-on-trigger patch we add ourselves (probably via Hijack).
-- **`DynamicLayout` (multi-piece composition)** — likely requires Hijack-level work in `GameHijackers/Simulation/` (intercept the simulation system that pattern-matches buildings into simulations, and inject multi-piece recognition for our registered `MetaBuildingDefinition`s).
+- Most buildings are **atomic** — one `Building` entity → one `Simulation`. They're created as `AtomicStatefulBuildingSimulationSystem<TSimulation, TState>` (or the stateless variant), one per `IBuildingDefinition` inside a `IBuildingDefinitionGroup`:
+  ```csharp
+  foreach (var definition in definitionGroup.Definitions)
+      yield return new AtomicStatefulBuildingSimulationSystem<HalfCutterSimulation, HalfCutterSimulationState>(
+          factory, definition.Id, Logger);
+  ```
+  Cutter (Half and Full), painter, mixer, stacker, **all logic gates including AND**, rotator, merger, splitter, label, button, display, signal transmitter — all atomic.
 
-Next step: read `SimulationSystemsInterceptor.cs` and a known multi-piece example (the belt path) to confirm the seam and the data model the interceptor sees.
+- **`ConveyorSimulationSystem`** is currently the *only* multi-piece pattern matcher in the base game:
+  ```csharp
+  var definitions = Mode.Buildings.GetDefinitionGroup(Mode.Buildings.BeltBuildingId).Definitions;
+  yield return new ConveyorSimulationSystem(definitions, conveyorConfig, Logger);
+  ```
+  It takes the entire belt definition list and matches N connected belt buildings into one conveyor `Simulation`. Belts are the canonical reference for "multi-piece composition" — there is no second example in the base game.
+
+- A few other multi-instance-aware systems exist (`ShapeMiningSystem`, `FluidExtractingSystem`, `SpaceBeltPortSystem`, `HubSystem`, `BeltPortSystem`, `FluidPortSystem`, `SignalPortSystem`, `TrainSystem`, `FluidNetworkSimulationSystem`, `SignalNetworkSystem`, `NotchAdapterSimulationSystem<,,>`) — these are network/port-matching systems, related but not "expand a building by adding pieces" in the way we'd want.
+
+### `BuildingDefinitionGroup` is the higher unit of building identity
+
+Each call uses `Mode.Buildings.GetDefinitionGroup(SomeBuildingDefinitionGroupId)` and iterates `.Definitions`. So a *group* (e.g. `HalfCutterDefinitionGroupId`) holds multiple `IBuildingDefinition`s — likely the default + mirrored + hex variations sharing a common simulation behaviour. Each definition in the group becomes its own atomic simulation system instance.
+
+**Design implication:** our `MetaBuildingDefinition` registration unit (per [[ADR-0005]]) may actually want to be **per `BuildingDefinitionGroup`** in many cases — one registration covering all definitions in the group — with the option to target a specific definition when granularity is needed. To be confirmed when we sketch the API.
+
+### Configuration is read from `definition.CustomData`
+
+`MergerSimulationFactory` reads its connector count from the definition's `CustomData`:
+```csharp
+new MergerConfiguration(conveyorSpeed,
+    definition.CustomData.Get<IBuildingConnectorData>()
+        .BuildingConnectorsOfType<BuildingItemInput>().Count)
+```
+So `IBuildingDefinition.CustomData` is the typed-bag the simulation reads its parameters from at startup. **This is likely where we attach our ExpandableX data** (e.g. registered layouts) — a custom data type on the definition, fetched by our system.
+
+### Extension surface: `ISimulationSystemsRewirer` (Shifter Hijack)
+
+`ShapezShifter.Hijack.SimulationSystemsInterceptor` uses MonoMod to postfix-hook `BuiltinSimulationSystems.CreateSimulationSystems()`. After the game's built-in systems are created, any `ISimulationSystemsRewirer` mods can `ModifySimulationSystems(ICollection<ISimulationSystem> systems, SimulationSystemsDependencies deps)` — adding, removing, or replacing systems. `SimulationSystemsDependencies` exposes `ShapeRegistry`, `FluidRegistry`, `SignalChannelRegistry`, `ResearchUnlockManager`, `GameMode`, `Logger`, etc.
+
+This is **the seam ExpandableX-Core needs.** For a `DynamicLayout` on the AND gate, we'd:
+1. Implement a new `ISimulationSystem` (modelled on `ConveyorSimulationSystem`) that matches multiple AND-gate buildings into one combined `Simulation`.
+2. Register an `ISimulationSystemsRewirer` that removes the game's `AtomicStatefulBuildingSimulationSystem<LogicGateAndSimulation, ...>` for the AND-gate definition and inserts our multi-piece system instead.
+
+The same surface lets a swap-implementation for a `StaticLayout` not touch simulation systems at all — both Half and Full cutter already have their atomic systems; only the player-action / placement layer needs patching to swap the placed building when the handle is dragged.
+
+## Pattern matching mechanism: `BuildingPathSimulationSystem<TConnectable, TInput, TOutput>`
+
+`Game.Content.BuildingPath.BuildingPathSimulationSystem<TConnectable, TInput, TOutput>` (in `Game.Content.dll`) is the generic base class for **all "multi-piece path" simulation systems**. `ConveyorSimulationSystem` extends it with `<ConnectableConveyorSimulation, BuildingItemInput, BuildingItemOutput>`.
+
+### The shape of the base class
+
+```csharp
+public abstract class BuildingPathSimulationSystem<TConnectableSimulation, TInput, TOutput>
+    : ITileSimulationSystem, ISimulationSystem,
+      ISpecializedBuildingTenantSimulationSystem, IBuildingTenantSimulationSystem
+    where TConnectableSimulation : class, IConnectablePathSimulation
+    where TInput : IBuildingIO
+    where TOutput : IBuildingIO
+```
+
+Subclasses override:
+- `CreateSimulation(buildings)` — build the unified `Simulation` from N buildings
+- `ExtendSimulationAtTheBeginning` / `ExtendSimulationAtTheEnd` — handle appending/prepending a building
+- `RemovePathFirstBuilding` / `RemovePathLastBuilding` / `RemoveBuildingAt(index)` — handle removals
+- `OnBeforeIntegrateBuildingIntoPath` (optional) — initialise per-building state
+
+### Disambiguation (the user-flagged concern) — RESOLVED
+
+The base class enforces that each member building has **exactly one** `TInput` connector and **exactly one** `TOutput` connector (constructor throws otherwise). Pattern matching happens via **global tile pivots**:
+
+- Every connector has a `Pivot(transform)` method computing its global tile coordinate (factors in the building's rotation).
+- When a new building is placed, the system computes:
+  ```csharp
+  var key  = GetInputPivot(building).CounterpartConnector();   // where an upstream building's OUTPUT would have to be
+  var key2 = GetOutputPivot(building).CounterpartConnector();  // where a downstream building's INPUT would have to be
+  ```
+- It checks `PathByOutputPivot[key]` and `PathByInputPivot[key2]` to find existing paths that match. Outcomes: extend-end, extend-start, merge-two-paths, or new-singleton-path.
+
+**Two unrelated buildings placed side-by-side don't fuse** because their input/output pivots don't satisfy the counterpart-equality test. Disambiguation is automatic and emerges from connector geometry — no flags, no head/body distinction needed in the basic case. Rotation matters: a belt rotated 90° has different pivots than one rotated 0°.
+
+### Implications for our `DynamicLayout`
+
+The mechanism is reusable. For our AND-gate dynamic expansion, we'd:
+
+1. Either subclass `BuildingPathSimulationSystem<,,>` directly (parameterising on signal connector types), or implement a separate matcher modelled on it. **Subclassing is preferred** if the AND-gate's expansion is path-shaped (1×N). For non-path shapes (trees, grids), we'd need a more general matcher.
+2. Declare the "joining" connectors on the AND-gate `MetaBuildingDefinition`. Open design question: should we **reuse** existing connector types on the gate (`BuildingSignalInput`/`BuildingSignalOutput`) or introduce **dedicated** "expansion-join" connector types? Reusing existing types is simpler but risks accidental joins from the player's wiring. Dedicated types are cleaner but need framework-level support.
+3. The base class only supports **exactly one input + one output** per piece. For an AND gate where the head has 1 output and N-1 inputs distributed across pieces, this is the wrong shape — we'd need a more general "compound building" matcher that allows multiple inputs per piece. **This is the key design question for `DynamicLayout` API.**
+
+So the `BuildingPathSimulationSystem` mechanism gives us the disambiguation logic we need but doesn't directly support the AND-gate shape. We either generalise it (subclass + override the 1-in/1-out validation) or write a sibling system for non-path shapes.
+
+## Per-instance state mechanism — RESOLVED
+
+`BuildingInstance` (the runtime struct passed to simulations) carries **four** fields:
+
+```csharp
+public readonly struct BuildingInstance(
+    IBuildingDefinition definition,             // per-TYPE template
+    in GlobalTileTransform transform,           // position + rotation
+    SimulationStateContainer state,             // per-INSTANCE simulation runtime state
+    IBuildingConfiguration configuration        // per-INSTANCE player-set state
+);
+```
+
+`State` is volatile-ish simulation runtime (item slots, processing progress, etc.). `Configuration` is the player-settable state that persists in saves and blueprints — exactly the field we need.
+
+### `IBuildingConfiguration` interface
+
+```csharp
+public interface IBuildingConfiguration : IEntityConfiguration, IEquatable<IEntityConfiguration> { }
+public interface IEntityConfiguration : IEquatable<IEntityConfiguration> {
+    void Sync(ISerializationVisitor visitor);
+}
+```
+
+Two contract methods: `Sync` (visitor-pattern serialization for saves and blueprints) and `Equals` (value equality for blueprint matching). Lean.
+
+### How a definition declares its configuration type
+
+The generic `MetaBuildingDefinition<TConfig>` exists alongside the non-generic `MetaBuildingDefinition`:
+
+```csharp
+public abstract class MetaBuildingDefinition<TConfig> : MetaBuildingDefinition, IBuildingConfigurationFactoryProvider
+    where TConfig : IBuildingConfiguration, new()
+{
+    public IFactory<IBuildingConfiguration> ConfigurationFactory { get; } =
+        new ParameterlessConstructionFactory<TConfig>() as IFactory<IBuildingConfiguration>;
+}
+```
+
+A `MetaBuildingDefinition<TMyConfig>` produces fresh `TMyConfig` instances on placement via the factory. Buildings whose definition is just the non-generic `MetaBuildingDefinition` have `null` configuration.
+
+### Real-world example: `ConstantSignalConfiguration` (44 lines)
+
+```csharp
+public class ConstantSignalConfiguration : IConstantSignalConfiguration, IBuildingConfiguration,
+                                           IEntityConfiguration, IEquatable<IEntityConfiguration>,
+                                           IEquatable<ConstantSignalConfiguration>
+{
+    private ISignal _Value = NullSignal.Instance;
+    public ISignal Value { get; set; }
+
+    public void Sync(ISerializationVisitor visitor) {
+        visitor.Sync(ref _Value);
+    }
+
+    public bool Equals(IEntityConfiguration other) =>
+        other is ConstantSignalConfiguration c && Equals(c);
+    public bool Equals(ConstantSignalConfiguration other) =>
+        other != null && Value.Equals(other.Value);
+}
+```
+
+### Implications for ExpandableX
+
+- **Connector slot state lives in an `IBuildingConfiguration` implementation we ship** (call it e.g. `ExpandableXBuildingConfiguration`). Fields hold per-slot `SlotRole` values; `Sync` serialises them via the visitor; `Equals` enables blueprint matching.
+- **Our head / body / tail `MetaBuildingDefinition`s derive from `MetaBuildingDefinition<ExpandableXBuildingConfiguration>`** so the factory wires up automatically. Configuration is created per-instance on placement.
+- **The singleton role uses the base-game `MetaBuildingDefinition` unmodified — which has no `Configuration`.** This means the **singleton case can't have toggleable / multi-state connector slots**: the 1-piece AND gate's third input being toggleable would require either (a) accepting it isn't toggleable until the player expands to a multi-piece chain, (b) shipping our own singleton replacement definition (loses the "reuse base-game" win for AND), or (c) patching the base-game `LogicGateAndMetaBuildingDefinition` to add Configuration. Probably (a) for v1 simplicity, but worth surfacing to the user.
+
+## What still needs investigation
+
+- Player-action / drag-handle plumbing — where placement → "swap definition" lives in the game's interaction surface (Shifter's `Placement/` and `Predictions/` patch surfaces are the likely places, but unverified). Worth investigating closer to implementation, when we know exactly which patch we need.
+- `IBuildingIO.Pivot(transform)` and `CounterpartConnector()` internals — they're what make disambiguation work. Worth confirming we can compute and compare these from a mod, but probably trivial.
