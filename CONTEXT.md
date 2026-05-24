@@ -10,8 +10,8 @@ The domain language for a pair of Shapez 2 mods that let players adjust the size
 A placed entity on the map with a `Definition`, `Transform`, `State`, and `Configuration`.
 _Avoid_: component, structure, block
 
-**BuildingDefinition**:
-The shared data template for all instances of a building type, identified by `BuildingDefinitionId`. Holds connector data and custom data.
+**BuildingDefinition** (`MetaBuildingDefinition`):
+The shared data template for a building type. In the game's actual model, this is `MetaBuildingDefinition` — a Unity `ScriptableObject` defined in `SPZGameAssembly` with the building's tile footprint (`Tiles[]`), connector arrays (`BeltInputs/Outputs`, `BeltPortInputs/Outputs`, `FluidInputs/Outputs/Junctions`, `SignalInputs/Outputs/Junctions`), and visual/sound configuration. We treat `MetaBuildingDefinition` as the canonical term; the docs sometimes shorten it to `BuildingDefinition`.
 _Avoid_: building type, building class
 
 **Entity**:
@@ -23,7 +23,7 @@ The per-logic-cluster runtime that drives behaviour. Stateless w.r.t. spatial in
 _Avoid_: controller, logic, behaviour
 
 **SimulationConnector**:
-An indexed I/O point on a `Simulation` (e.g. `Input #0`, `Output #0`). Used by `SimulationGraph` to wire simulations together. Indexed, not per-side at the API level.
+An indexed I/O point on a `Simulation` (e.g. `Input #0`, `Output #0`) used by `SimulationGraph` to wire simulations together. This is a *simulation-layer* abstraction; at the `MetaBuildingDefinition` layer, connectors live in **eight typed arrays** by medium and direction (`BeltInputs/Outputs`, `BeltPortInputs/Outputs`, `FluidInputs/Outputs/Junctions`, `SignalInputs/Outputs/Junctions`). The indexed `SimulationConnector` view unifies those heterogeneous arrays at runtime.
 _Avoid_: input, output, port, pin, socket
 
 **SimulationSystem**:
@@ -34,9 +34,8 @@ _Avoid_: registry, manager
 The per-`Entity` data the player can adjust (e.g. "the shape this item producer should make"). Persisted in saves.
 _Avoid_: settings, options, state
 
-**Variant**:
-Shapez's term for a geometric/orientation sub-type of a `BuildingDefinition`. Variants are **the same logic in a different physical arrangement** — e.g. the mirrored cutter, the mirrored bent stacker, the different bend angles of belts, the mirrored comparison gates. They are **not** different logical operations: AND, OR, and XOR are separate `BuildingDefinition`s, not variants of each other. Because variants are geometric, two variants of the same `BuildingDefinition` often need *different layouts* (e.g. one expands rightward, the other leftward).
-_Avoid_: kind, flavour, version
+**Variant** (deprecated as a separate concept):
+Earlier in the design we thought "variant" was a sub-axis of `MetaBuildingDefinition` (mirrored cutter, mirrored bent stacker, belt bends, mirrored comparison gates). Decompilation revealed Shapez has **no `Variant` field** — each of those is its own `MetaBuildingDefinition`. The visual mirror relationship is expressed via the `IBuildingMirrorableCustomDrawData` interface (`DrawData.Mirror(...)` returns the flipped form for asymmetric definitions; symmetric ones return themselves). **Avoid the word "variant" in new design discussion — use `MetaBuildingDefinition` directly.**
 
 ### ExpandableX domain terms
 
@@ -56,16 +55,24 @@ _Avoid_: resize, footprint change, multi-tile building, growable grid
 A `BuildingDefinition` is expandable **only** if something has registered expandability for it with `ExpandableX-Core`. There is no implicit/default expandability — game balance and intentional progression decisions (e.g. separately-unlocked straight vs bent stackers) demand explicit choices.
 
 **Layout** (umbrella):
-A specific valid state a player can put an expandable building into — the spatial composition (which pieces go where, at what rotation) plus the set of toggleable connectors available in that state. Multiple layouts per expandable (`BuildingDefinition`, `Variant`) pair. Layouts are catalog/registry entries, not per-instance state. Comes in two kinds: **`StaticLayout`** and **`DynamicLayout`**.
+A specific valid state a player can put an expandable building into. Multiple layouts per expandable `MetaBuildingDefinition`. Layouts are catalog/registry entries, not per-instance state. Comes in two kinds — **`StaticLayout`** and **`DynamicLayout`** — which are implemented via two different runtime mechanisms (see [[project-dual-layout-implementation]]).
 _Avoid_: form, composition, variant, pattern, shape
 
 **StaticLayout**:
-An enumerated layout with a fixed list of `PieceSpec`s — the case where a building has a finite set of valid sizes that can be listed up-front. The cutter is the canonical example (`2-piece, 3-piece, 4-piece, 6-piece` for its default variant). Each `PieceSpec` carries relative position, rotation, the connectors that participate in the unified `Simulation`, and the subset of those connectors that are user-toggleable per-instance. All pieces in a single `StaticLayout` share the same `BuildingDefinition` and `Variant` — the **homogeneous pieces** assumption — which holds for every base-game case we've examined.
+A layout that corresponds 1-to-1 with a specific `MetaBuildingDefinition`. The case where a building has a finite, hand-crafted set of valid sizes, each modelled as its own definition. The cutter is the canonical example: `HalfCutterMetaBuildingDefinition` (2-output, already in the base game) and `FullCutterMetaBuildingDefinition` (4-output, also already in the base game) are two `StaticLayout`s on the cutter; the hex-mode 3-piece and 6-piece cases are additional `StaticLayout`s backed by **new `MetaBuildingDefinition`s we ship**. The painter is also a `StaticLayout` — the existing 2×1 `PainterMetaBuildingDefinition` — with toggleable paint-input connectors.
+
+A `StaticLayout` itself doesn't enumerate pieces or footprint; that data already lives on the referenced `MetaBuildingDefinition`. The `StaticLayout` just records: which definition is this layout, which of its connectors are user-toggleable, and what conditions (game mode etc.) gate availability.
+
+**Runtime mechanism:** *swap*. Transitioning between static layouts swaps the `MetaBuildingDefinition` of the placed building; Shapez handles the resulting tile / connector reconfiguration natively.
 
 **DynamicLayout**:
-A rule-based layout that matches arbitrary connected arrangements rather than enumerating them. The case where a building has no clear upper bound on size — the AND gate, where the player may want as many inputs as they like. Modelled on how Shapez already pattern-matches belts into one conveyor `Simulation` regardless of length. A `DynamicLayout` provides matching logic (does this arrangement count?) and connector-computation logic (given a matching arrangement, which connectors participate and which are toggleable?). A single (`BuildingDefinition`, `Variant`) registration may carry static layouts, dynamic layouts, or both, but a player-placed arrangement matches at most one of them at a time.
+A rule-based layout that matches arbitrary connected arrangements of one `MetaBuildingDefinition`. The case where the player can keep expanding indefinitely along some axis — the AND gate with N inputs for unbounded N is the canonical example. Authoring a `MetaBuildingDefinition` per size doesn't scale, so a single definition is paired with a matching rule that recognises N connected instances as one logical building.
 
-**Open question:** whether `ExpandableX-Core` needs a custom dynamic-layout matcher at all, or whether it can hook into Shapez's existing `SimulationSystem` pattern-matching directly. Resolution requires decompiling Shapez. If direct hooking works, `DynamicLayout` may collapse from "framework abstraction" to "thin wrapper over a Shapez extension point." The conceptual role stays the same either way.
+**Runtime mechanism:** *multi-piece composition*, modelled on how Shapez pattern-matches multiple belt buildings into one conveyor `Simulation`. The matching rule decides which arrangements count and computes which connectors participate (and which are toggleable) on the matched composition.
+
+**Open question:** whether `ExpandableX-Core` invents its own pattern-matching system or hooks into the game's existing one. Resolution depends on understanding the ShapezShifter extension surface; tracked under task #6 (blocked on task #4).
+
+A single `MetaBuildingDefinition` registration may carry static layouts, dynamic layouts, or both, but a player-placed arrangement matches at most one of them at a time.
 _Avoid_: parametric layout, generator, pattern (clashes with Shapez's `SimulationSystem` pattern-matching language at a different abstraction level)
 
 **Toggleable connectors as a property of a layout**:
@@ -92,37 +99,41 @@ A third-party mod that uses `ExpandableX-Core` to register expandability for `Bu
 _Avoid_: bridge mod, adapter mod
 
 **Register**:
-The default API call by which a mod claims a (`BuildingDefinition`, `Variant`) pair as expandable and supplies its layouts. **First-wins, yielding caller.** If no registration exists for the pair, this call succeeds and the caller becomes the registration. If another mod has already registered (whether via `Register` or `RegisterOverride`), this call becomes a **no-op with a warning** stating the calling mod is no longer needed — it does not error and does not clobber. This is what makes compatibility mods inert automatically when the modded mod ships first-party expandability. For `BuildingDefinition`s with no meaningful variant distinction, callers register against a default/sole variant id (a syntactic shortcut for this should be provided).
+The default API call by which a mod claims a `MetaBuildingDefinition` as expandable and supplies its layouts. **First-wins, yielding caller.** If no registration exists for the `MetaBuildingDefinition`, this call succeeds and the caller becomes the registration. If another mod has already registered (whether via `Register` or `RegisterOverride`), this call becomes a **no-op with a warning** stating the calling mod is no longer needed — it does not error and does not clobber. This is what makes compatibility mods inert automatically when the modded mod ships first-party expandability.
 
 **Override**:
-The explicit, intentional API call (e.g. `RegisterOverride`) by which a mod replaces whatever registration exists (or doesn't) for a (`BuildingDefinition`, `Variant`) pair. **Last-wins, loud-by-default.** Always succeeds; always wins. If a prior `Register` exists, it is replaced silently (the user opted in by choosing `RegisterOverride`). If no prior registration exists, the override simply becomes the registration. If multiple `RegisterOverride` calls target the same pair, the last to load wins — so an override-vs-override conflict is resolvable only by `meta.json` load order.
+The explicit, intentional API call (e.g. `RegisterOverride`) by which a mod replaces whatever registration exists (or doesn't) for a `MetaBuildingDefinition`. **Last-wins, loud-by-default.** Always succeeds; always wins. If a prior `Register` exists, it is replaced silently (the user opted in by choosing `RegisterOverride`). If no prior registration exists, the override simply becomes the registration. If multiple `RegisterOverride` calls target the same `MetaBuildingDefinition`, the last to load wins — so an override-vs-override conflict is resolvable only by `manifest.json` load order.
 _Avoid_: replace, supersede
 
 ## v1 scope (competition release)
 
 The `ExpandableX` mod's first release registers expandability for exactly three base-game buildings:
 
-- **One logic gate** (specific gate TBD — pick whichever has the cleanest existing model to tweak). Uses a `DynamicLayout` (unbounded 1×N expansion) plus toggleable connectors.
-- **Cutter** (default + mirrored variants). Uses `StaticLayout`s — 2-piece (normal-mode default), 3-piece and 6-piece (hex-mode-only), 4-piece. Exercises mode-conditional layouts.
-- **Painter**. The painter occupies a 2×1 footprint in the base game — one cell carries the paint-input connectors and the other carries the shape input/output. v1 registers a single `StaticLayout` for it with toggleable paint-input connectors on the paint cell; no composable or dynamic expansion. Demonstrates the toggleable-only path. Whether the painter is internally one multi-cell `Building` or two pattern-matched `Building`s is unresolved (see Flagged ambiguities) — the layout shape will need to match whichever it turns out to be.
+- **One logic gate** (specific gate TBD — pick whichever has the cleanest existing model to tweak). Uses a `DynamicLayout` (unbounded 1×N expansion) plus toggleable connectors. Implemented via multi-piece composition.
+- **Cutter**. Uses `StaticLayout`s implemented via `MetaBuildingDefinition` swaps: the existing `HalfCutterMetaBuildingDefinition` (2-output default) and `FullCutterMetaBuildingDefinition` (4-output), plus **new `MetaBuildingDefinition`s we ship** for 3-piece and 6-piece hex-mode layouts. Exercises mode-conditional layouts and reuses an existing in-game definition we hadn't previously realised existed.
+- **Painter**. The existing `PainterMetaBuildingDefinition` is a 2×1 footprint — one cell carries the paint-input connectors, the other carries the shape input/output. v1 registers a single `StaticLayout` for it with toggleable paint-input connectors. No composable or dynamic expansion. Demonstrates the toggleable-only path.
 
 This deliberately exercises every mechanism the framework promises (composable, toggleable, variant-aware, mode-conditional, static, dynamic) on a small surface. Adding more buildings is gated by modelling effort, not code — see [[project-modelling-is-bottleneck]]. Excluded for v1: platforms (deferred), stackers (no meaningful expansion), color mixer (cheap-to-add if there's time, but not committed), all other base-game buildings.
 
 ## Flagged ambiguities
 
-- **"Connector side"** — at the simulation API level, connectors are indexed (`Input #0`), not per-side. Whether they map to a specific face of a tile (and how) is unresolved and needs decompilation. Mental models that talk about "the back input" of a gate are about *visual placement on a tile face*, which may or may not align with connector index.
-- **Multi-tile single pieces** — observed in the base game (mixer is a 3×2 with a corner cut; stacker is 2 tiles tall), but it's unknown whether each multi-tile building is one `Building` with a multi-cell footprint *or* multiple `Building`s pattern-matched into one `Simulation` (the same mechanism we plan to use for composable expansion). Needs decompile. If multi-tile single pieces are real, `PieceSpec` will need a footprint shape, not just a single grid offset.
+- **"Connector side"** — at the simulation API level, connectors are indexed (`Input #0`), not per-side. At the `MetaBuildingDefinition` layer they live in eight typed arrays (`BeltInputs/Outputs`, `BeltPortInputs/Outputs`, `FluidInputs/Outputs/Junctions`, `SignalInputs/Outputs/Junctions`). Whether individual array entries carry a per-side position (or just a tile offset, or something else) still needs verification — `BuildingItemInput`, `BeltPortInput`, etc. are not yet decompiled.
+- **Multi-tile single pieces** — **resolved.** `MetaBuildingDefinition.Tiles[]` makes single multi-tile buildings native. The painter, mixer, and stacker are single multi-tile `MetaBuildingDefinition`s, not compositions. Our framework only invokes multi-piece composition for `DynamicLayout`s, not for representing multi-tile single buildings.
+- **Per-instance `Configuration`** — the `Configuration` nested class on each `MetaBuildingDefinition` (e.g. `HalfCutterMetaBuildingDefinition.Configuration`) carries per-*type* tuning (belt speed, processing delay), not per-instance state. Where toggleable-connector state would persist per-instance is still open; likely on the `Building` entity itself or via a `CustomDataHolder`, but we need to decompile the `Building` class to confirm.
+- **Pattern-matching extension surface** — only one `SimulationSystem` class surfaced in the search; building types don't appear to own per-type systems. The multi-piece pattern-matching mechanism we need for `DynamicLayout` is likely generic and parameterised by `MetaBuildingDefinition` data. Whether ShapezShifter exposes a hook for it (or we'd have to add patches) is the next thing to investigate.
+
+- **Dynamic-layout disambiguation** — a `DynamicLayout` pattern matcher needs some way to distinguish "these adjacent same-type buildings are part of the same logical building" from "these adjacent same-type buildings are two separate logical buildings the player happened to place next to each other." Two AND gates side by side shouldn't merge into one expanded AND gate unless the player intended it. Mechanisms to evaluate: (a) the pieces involved in an extension carry a flag / per-instance data marking them as joined, (b) introduce piece kinds (e.g. a "head" `MetaBuildingDefinition` plus a "body" `MetaBuildingDefinition`, where the matching rule requires one head and N bodies linked through specific connector faces), or (c) use rotation / orientation to encode the joining relationship. We don't yet know which fits Shapez's pattern-matching surface — depends on what the `SimulationSystemsInterceptor` exposes. Tracked under task #6.
 
 ## Example dialogue
 
 > **User:** "Make the cutter expandable so it can produce 4 outputs."
 >
-> **Dev:** "OK — for a 4-output cutter we need a footprint with at least 4 output-facing tiles, so this is composable expansion. The cutter has a finite set of valid sizes (2/3/4/6 depending on game mode), so I'll register `StaticLayout`s — one per size. I register against the (`cutter`, `default`) pair and separately against (`cutter`, `mirrored`) since the mirrored variant's layouts go the other way. The 3-piece and 6-piece layouts carry a hex-mode condition. At runtime, `SimulationSystem` pattern-matches whichever layout the player has placed and constructs the right `Simulation`."
+> **Dev:** "Good news — the 4-output cutter already exists as `FullCutterMetaBuildingDefinition` in the base game; we don't need to model it. I register two `StaticLayout`s on the cutter — one pointing at `HalfCutterMetaBuildingDefinition` (the 2-output default), one at `FullCutterMetaBuildingDefinition`. When the player expands via the drag-handle, the framework swaps the placed building from Half to Full; Shapez handles the resulting tile / connector reconfiguration. For the hex-mode 3-piece and 6-piece layouts, we'll need to author *new* `MetaBuildingDefinition`s — those don't exist yet — and register them as additional `StaticLayout`s with a hex-mode condition."
 >
 > **User:** "And the AND gate? I want players to be able to expand it however much they like."
 >
-> **Dev:** "That's a `DynamicLayout` — no fixed upper bound, so it can't be a static enumeration. I register a rule that matches any connected line of same-variant gate pieces. The rule computes which connectors are active (outputs are on the front face of the head piece, inputs are on the outer faces of the rest) and which are toggleable. Mechanically, this is how belts already work in Shapez — we just plug into the same pattern-matching extension."
+> **Dev:** "That's a `DynamicLayout` — no fixed upper bound, so swap-based static layouts don't scale. One `MetaBuildingDefinition` (the existing `LogicGateAndMetaBuildingDefinition`) is paired with a matching rule that recognises any connected line of AND-gate buildings as one logical gate. The rule computes which connectors participate (outputs on the front face of the head piece, inputs on the outer faces of the rest) and which are toggleable. Mechanically this is how belts already work in Shapez — pattern-matching multiple connected instances into one `Simulation`."
 >
 > **User:** "And the painter?"
 >
-> **Dev:** "Painter occupies 2×1 in the base game — paint connectors on one cell, shape input/output on the other. v1 registers one `StaticLayout` describing that arrangement, with the paint-input connectors marked toggleable. No composable or dynamic expansion. Each paint-input `SimulationConnector` gets a flag in the painter `Entity`'s `Configuration`; flipping it disables that connector for placement and simulation purposes."
+> **Dev:** "Painter is just a `StaticLayout` pointing at the existing `PainterMetaBuildingDefinition` (a 2×1) with its paint-input connectors marked toggleable. No composable or dynamic expansion."

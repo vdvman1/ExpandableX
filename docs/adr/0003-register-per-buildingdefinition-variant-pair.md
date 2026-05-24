@@ -1,5 +1,8 @@
 # Registration unit is (BuildingDefinition, Variant), not BuildingDefinition alone
 
+> **Status: superseded by [ADR-0005](./0005-register-per-metabuildingdefinition-with-dual-implementation.md).**
+> Decompilation of Shapez 2 after this ADR was written revealed that Shapez has no `Variant` concept at all — what we were calling "variants" (the mirrored cutter, the mirrored bent stacker, belt bend angles, mirrored comparison gates) are each their own `MetaBuildingDefinition` rather than sub-types of one. The (BD, Variant) framing in this ADR was therefore based on a misunderstanding. ADR-0005 supersedes this with the correct framing: registration is per `MetaBuildingDefinition`.
+
 Expandability is registered against a (`BuildingDefinition`, `Variant`) pair, not against a `BuildingDefinition` alone. Every layout in a registration applies to that exact pair. For `BuildingDefinition`s without meaningful variants, callers register under a default/sole variant id; a syntactic shortcut (e.g. `Register(buildingDefinitionId, layouts)` overload) hides the variant from callers who don't care about it.
 
 ## Considered Options

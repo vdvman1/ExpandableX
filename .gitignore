@@ -432,3 +432,6 @@ FodyWeavers.xsd
 docs/Shapez 2 Modding Documentation _ Notion.html
 docs/Shapez 2 Modding Documentation _ Notion_files/
 
+# Project-specific: decompiled game assemblies for local research only (not redistributed)
+.decompiled/
+

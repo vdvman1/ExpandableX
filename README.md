@@ -40,8 +40,11 @@ The framework itself supports more than this slice exercises; subsequent release
 - [docs/adr/](./docs/adr/) — architectural decision records:
   - [ADR-0001](./docs/adr/0001-registration-model-first-wins-with-explicit-override.md) — registration model: `Register` (first-wins, yielding) + `RegisterOverride` (last-wins, loud)
   - [ADR-0002](./docs/adr/0002-drag-handle-target-with-build-and-detect-stepping-stone.md) — drag-handle UX with build-and-detect proof-of-concept
-  - [ADR-0003](./docs/adr/0003-register-per-buildingdefinition-variant-pair.md) — registration unit is per (`BuildingDefinition`, `Variant`)
+  - [ADR-0003](./docs/adr/0003-register-per-buildingdefinition-variant-pair.md) — (superseded by ADR-0005) original (`BuildingDefinition`, `Variant`) framing, kept for history
   - [ADR-0004](./docs/adr/0004-dynamic-layout-as-sibling-to-static-layout.md) — `DynamicLayout` as a sibling concept to `StaticLayout`
+  - [ADR-0005](./docs/adr/0005-register-per-metabuildingdefinition-with-dual-implementation.md) — registration per `MetaBuildingDefinition`; static layouts swap, dynamic layouts compose
+- [docs/research/](./docs/research/) — notes from decompiling the game to ground design decisions:
+  - [shapez2-internals.md](./docs/research/shapez2-internals.md) — findings about Shapez 2's building model, connector layout, and pattern-matching
 
 ## Modding references
 
