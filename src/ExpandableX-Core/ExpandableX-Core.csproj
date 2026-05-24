@@ -19,6 +19,10 @@
       <HintPath>$(SPZ2_SHIFTER)</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="MonoMod.RuntimeDetour">
+      <HintPath>$(SPZ2_PATH)\..\..\..\..\workshop\content\2162800\3542712030\MonoMod.RuntimeDetour.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
 
     <Reference Include="SPZGameAssembly">
       <HintPath>$(SPZ2_PATH)\SPZGameAssembly.dll</HintPath>
@@ -36,8 +40,16 @@
       <HintPath>$(SPZ2_PATH)\Game.Core.Coordinates.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="Game.Core.Map">
+      <HintPath>$(SPZ2_PATH)\Game.Core.Map.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Game.Core.Map.Model">
       <HintPath>$(SPZ2_PATH)\Game.Core.Map.Model.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Game.Core.Map.Layout">
+      <HintPath>$(SPZ2_PATH)\Game.Core.Map.Layout.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Game.Core.Map.Layout.Model">
