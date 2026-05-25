@@ -118,6 +118,36 @@ namespace ExpandableX.Core
                     dependencies.Mode.Buildings._DefinitionsById.Add(configurableVariant.Id, configurableVariant);
 
                     _logger.Info.Log($"ExpandableX-Core:   + variant '{newDefName}' supports config: {configurableVariant.CanCreateConfiguration()}");
+
+                    IReadOnlyList<BuildingItemInput> beltIn = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingItemInput>();
+                    IReadOnlyList<BuildingItemOutput> beltOut = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingItemOutput>();
+                    IReadOnlyList<BuildingFluidInput> fluidIn = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingFluidInput>();
+                    IReadOnlyList<BuildingFluidOutput> fluidOut = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingFluidOutput>();
+                    IReadOnlyList<BuildingFluidJunction> fluidJunc = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingFluidJunction>();
+                    IReadOnlyList<BuildingSignalInput> sigIn = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingSignalInput>();
+                    IReadOnlyList<BuildingSignalOutput> sigOut = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingSignalOutput>();
+                    IReadOnlyList<BuildingSignalJunction> sigJunc = configurableVariant.ConnectorData.BuildingConnectorsOfType<BuildingSignalJunction>();
+                    _logger.Info.Log($"ExpandableX-Core:     connector counts: belt(in={beltIn.Count}, out={beltOut.Count}); fluid(in={fluidIn.Count}, out={fluidOut.Count}, junction={fluidJunc.Count}); signal(in={sigIn.Count}, out={sigOut.Count}, junction={sigJunc.Count})");
+
+                    for (int i = 0; i < beltIn.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingItemInput[{i}] pos={beltIn[i].Position_L} dir={beltIn[i].TileDirection}"); }
+                    for (int i = 0; i < beltOut.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingItemOutput[{i}] pos={beltOut[i].Position_L} dir={beltOut[i].TileDirection}"); }
+                    for (int i = 0; i < fluidIn.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingFluidInput[{i}] pos={fluidIn[i].Position_L} dir={fluidIn[i].TileDirection}"); }
+                    for (int i = 0; i < fluidOut.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingFluidOutput[{i}] pos={fluidOut[i].Position_L} dir={fluidOut[i].TileDirection}"); }
+                    for (int i = 0; i < fluidJunc.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingFluidJunction[{i}] pos={fluidJunc[i].Position_L} dir={fluidJunc[i].TileDirection} ioType={fluidJunc[i].IOType}"); }
+                    for (int i = 0; i < sigIn.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingSignalInput[{i}] pos={sigIn[i].Position_L} dir={sigIn[i].TileDirection}"); }
+                    for (int i = 0; i < sigOut.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingSignalOutput[{i}] pos={sigOut[i].Position_L} dir={sigOut[i].TileDirection}"); }
+                    for (int i = 0; i < sigJunc.Count; i++) { _logger.Info.Log($"ExpandableX-Core:       BuildingSignalJunction[{i}] pos={sigJunc[i].Position_L} dir={sigJunc[i].TileDirection}"); }
+
+                    if (configurableVariant.CustomData.TryGet<IPainterConfiguration>(out IPainterConfiguration painterConfig))
+                    {
+                        ShapeOperationPaintTopmost paintOp = new ShapeOperationPaintTopmost(dependencies.ShapeRegistry, dependencies.ShapeIdManager);
+                        TopmostPainterSimulationFactory simFactory = new TopmostPainterSimulationFactory(painterConfig, paintOp, dependencies.ShapeRegistry);
+                        AtomicStatefulBuildingSimulationSystem<TopmostPainterSimulation, PainterSimulationState> simSystem =
+                            new AtomicStatefulBuildingSimulationSystem<TopmostPainterSimulation, PainterSimulationState>(
+                                simFactory, configurableVariant.Id, dependencies.Logger);
+                        simulationSystems.Add(simSystem);
+                        _logger.Info.Log($"ExpandableX-Core:     + painter simulation system registered for '{newDefName}'");
+                    }
                 }
 
                 dependencies.Mode.Buildings._VariantsById.Add(configurableGroupId, configurableGroup);
