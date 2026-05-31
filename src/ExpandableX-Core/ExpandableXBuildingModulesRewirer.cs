@@ -1,9 +1,16 @@
 using System.Collections.Generic;
+using System.Linq;
 using ShapezShifter.Hijack;
 using ILogger = Core.Logging.ILogger;
 
 namespace ExpandableX.Core
 {
+    /// <summary>
+    /// Attaches the slot-toggle UI to every catalogued definition (the base building and all of its
+    /// generated variants), wrapping the building's existing module provider so the player keeps the
+    /// native panel plus per-slot dropdowns. Reads the decode catalog the simulation-systems rewirer
+    /// populated, so it must run after it.
+    /// </summary>
     internal class ExpandableXBuildingModulesRewirer : IBuildingModulesRewirer
     {
         private readonly ILogger _logger;
@@ -17,58 +24,35 @@ namespace ExpandableX.Core
 
         public void AddModules(BuildingsModulesLookup modulesLookup)
         {
-            GameMode mode = _registry.CurrentMode;
-            if (mode == null)
+            // One variant set per piece, keyed by its (unique) base definition id.
+            var setsByBase = new Dictionary<string, PieceVariantSet>();
+            foreach (VariantPlacement placement in _registry.VariantsByDefId.Values)
             {
-                _logger.Info.Log("ExpandableX-Core: modules rewirer firing but CurrentMode not captured — skipping");
-                return;
+                setsByBase[placement.Set.BaseDefinitionId] = placement.Set;
             }
 
-            _logger.Info.Log($"ExpandableX-Core: modules rewirer firing — processing {_registry.Registrations.Count} registration(s)");
+            _logger.Info.Log($"ExpandableX-Core: modules rewirer firing — {setsByBase.Count} configurable base(s)");
 
-            foreach (KeyValuePair<string, Layout> kv in _registry.Registrations)
+            foreach (PieceVariantSet set in setsByBase.Values)
             {
-                string sourceGroupIdName = kv.Key;
-                Layout layout = kv.Value;
-
 #pragma warning disable CS0618
-                BuildingDefinitionGroupId sourceGroupId = new BuildingDefinitionGroupId(sourceGroupIdName);
+                BuildingDefinitionId baseId = new BuildingDefinitionId(set.BaseDefinitionId);
 #pragma warning restore CS0618
 
-                IBuildingDefinitionGroup sourceGroup = mode.Buildings.GetDefinitionGroup(sourceGroupId);
-                if (sourceGroup == null)
+                // The base's existing provider becomes the inner of every wrapped definition. Read it
+                // once, before wrapping, so variants don't inherit an already-wrapped provider.
+                modulesLookup.BuildingModulesMap.TryGetValue(baseId, out IBuildingModules inner);
+
+                var defNames = set.DefIdByComboKey.Values.Distinct().ToList();
+                foreach (string defName in defNames)
                 {
-                    continue;
-                }
-
-                StaticLayout staticLayout = layout as StaticLayout;
-
-                foreach (IBuildingDefinition existing in sourceGroup.Definitions)
-                {
-                    BuildingDefinitionId defId = existing.Id;
-                    if (modulesLookup.BuildingModulesMap.TryGetValue(defId, out IBuildingModules inner))
-                    {
-                        modulesLookup.BuildingModulesMap[defId] = new ExpandableXModuleWrapper(inner, _registry, _logger);
-                        _logger.Info.Log($"ExpandableX-Core: modules rewirer: wrapped module provider for '{defId.Name}'");
-                    }
-                    else
-                    {
-                        _logger.Info.Log($"ExpandableX-Core: modules rewirer: no existing module provider for '{defId.Name}' — skipping wrap");
-                    }
-
-                    if (staticLayout != null)
-                    {
 #pragma warning disable CS0618
-                        BuildingDefinitionId configurableId = new BuildingDefinitionId(defId.Name + "_ExpandableXConfigurable");
+                    BuildingDefinitionId defId = new BuildingDefinitionId(defName);
 #pragma warning restore CS0618
-
-                        if (!modulesLookup.BuildingModulesMap.ContainsKey(configurableId))
-                        {
-                            modulesLookup.BuildingModulesMap[configurableId] = new ConfigurableVariantModules(staticLayout, _logger);
-                            _logger.Info.Log($"ExpandableX-Core: modules rewirer: registered slot modules for '{configurableId.Name}' ({staticLayout.Slots.Count} slot(s))");
-                        }
-                    }
+                    modulesLookup.BuildingModulesMap[defId] = new ConfigurableVariantModules(inner, _registry, _logger);
                 }
+
+                _logger.Info.Log($"ExpandableX-Core: modules rewirer: slot UI on {defNames.Count} definition(s) for base '{set.BaseDefinitionId}'");
             }
         }
     }

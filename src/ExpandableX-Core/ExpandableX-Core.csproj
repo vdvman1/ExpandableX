@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
-    <Nullable>disable</Nullable>
-    <LangVersion>9</LangVersion>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
     <RootNamespace>ExpandableX.Core</RootNamespace>
     <AssemblyName>ExpandableX-Core</AssemblyName>
     <NoWarn>$(NoWarn);CS0436</NoWarn>
@@ -125,6 +125,13 @@
 
   <ItemGroup>
     <PackageReference Include="Krafs.Publicizer" Version="2.3.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+
+    <!-- Compile-time polyfills (IsExternalInit etc.) so modern C# works on
+         netstandard2.1 with no runtime dependency. -->
+    <PackageReference Include="PolySharp" Version="1.14.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
