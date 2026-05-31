@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using ILogger = Core.Logging.ILogger;
 
@@ -11,10 +9,16 @@ namespace ExpandableX.Core
 
         public GameMode CurrentMode { get; internal set; }
 
+        /// <summary>The session's player action manager, captured once at session init so slot
+        /// changes can be dispatched as undoable actions. Null until a session has started.</summary>
+        public PlayerActionManager PlayerActions { get; internal set; }
+
+        /// <summary>The local player, captured alongside <see cref="PlayerActions"/> (needed to author actions).</summary>
+        public Player LocalPlayer { get; internal set; }
+
         private readonly ILogger _logger;
         private readonly Dictionary<string, Registration> _registrations = new Dictionary<string, Registration>();
         private readonly Dictionary<string, VariantPlacement> _variantsByDefId = new Dictionary<string, VariantPlacement>();
-        private readonly ConcurrentQueue<Action> _deferredActions = new ConcurrentQueue<Action>();
 
         public IReadOnlyDictionary<string, Registration> Registrations => _registrations;
 
@@ -27,26 +31,6 @@ namespace ExpandableX.Core
 
         internal void RecordVariant(string definitionIdName, VariantPlacement placement) =>
             _variantsByDefId[definitionIdName] = placement;
-
-        public void EnqueueDeferred(Action action)
-        {
-            _deferredActions.Enqueue(action);
-        }
-
-        internal void DrainDeferred()
-        {
-            while (_deferredActions.TryDequeue(out Action action))
-            {
-                try
-                {
-                    action();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Info.Log($"ExpandableX-Core: deferred action threw: {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-        }
 
         internal static void Initialize(ILogger logger)
         {

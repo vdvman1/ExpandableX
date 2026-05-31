@@ -44,41 +44,38 @@ namespace ExpandableX.Core
             PieceVariantSet set = placement.Set;
             foreach (ConnectorSlot slot in set.Slots)
             {
-                var options = new List<IText>();
-                var targetDefs = new List<string>();
-                int currentIndex = 0;
+                yield return new HUDSidePanelModuleInfoText.Data(new RawText(slot.Id));
+
+                SlotRole currentRole = placement.SlotState[slot.Id];
+                var buttons = new List<PlacementKeybindingHintData>(slot.AllowedRoles.Count);
 
                 foreach (SlotRole role in slot.AllowedRoles)
                 {
                     string comboKey = VariantEncoder.ComboKey(set.Slots, WithRole(placement.SlotState, slot.Id, role));
-                    if (!set.DefIdByComboKey.TryGetValue(comboKey, out string targetDef))
-                    {
-                        continue; // unreachable (pruned) — don't offer it
-                    }
+                    // Reachable iff its combination exists in the table (pruned combos are absent).
+                    bool reachable = set.DefIdByComboKey.TryGetValue(comboKey, out string targetDef);
+                    bool isCurrent = role == currentRole;
+                    // A role is selectable only if it's reachable and not already current; otherwise the
+                    // button is shown but disabled (ActiveIf=false) so the player sees the option exists.
+                    bool selectable = reachable && !isCurrent;
 
-                    if (role == placement.SlotState[slot.Id])
+                    IMapModel capturedMap = map;
+                    BuildingModel capturedBuilding = building;
+                    buttons.Add(new PlacementKeybindingHintData
                     {
-                        currentIndex = options.Count;
-                    }
-
-                    options.Add(new RawText(role.ToString()));
-                    targetDefs.Add(targetDef);
+                        OverrideTitle = new RawText(isCurrent ? $"{role} (current)" : role.ToString()),
+                        ActiveIf = () => selectable,
+                        Handler = () =>
+                        {
+                            if (selectable)
+                            {
+                                SwapTo(capturedMap, capturedBuilding, currentDefName, targetDef);
+                            }
+                        },
+                    });
                 }
 
-                if (options.Count <= 1)
-                {
-                    continue; // nothing to choose
-                }
-
-                yield return new HUDSidePanelModuleInfoText.Data(new RawText(slot.Id));
-
-                List<string> capturedTargets = targetDefs;
-                IMapModel capturedMap = map;
-                BuildingModel capturedBuilding = building;
-                yield return new HUDSidePanelModuleDropdownSelector.Data(
-                    options,
-                    currentIndex,
-                    index => SwapTo(capturedMap, capturedBuilding, currentDefName, capturedTargets[index]));
+                yield return new HUDSidePanelModuleActionButtons.Data(buttons);
             }
         }
 
@@ -93,9 +90,11 @@ namespace ExpandableX.Core
             }
 
             GameMode mode = _registry.CurrentMode;
-            if (mode == null)
+            PlayerActionManager playerActions = _registry.PlayerActions;
+            Player executor = _registry.LocalPlayer;
+            if (mode == null || playerActions == null || executor == null)
             {
-                _logger.Info.Log("ExpandableX-Core: slot change: CurrentMode not set yet, aborting");
+                _logger.Info.Log("ExpandableX-Core: slot change: session managers not captured yet, aborting");
                 return;
             }
 
@@ -109,23 +108,16 @@ namespace ExpandableX.Core
                 return;
             }
 
-            GlobalTileTransform transform = building.Transform;
-            BuildingId buildingId = building.Id;
-            // Carry the existing per-instance configuration across the swap so any settings survive a
-            // slot toggle (the target is the same building type, just different connectors). This is
-            // null for a config-less building like the painter — do NOT fabricate one via
-            // CreateConfiguration(): id-as-truth variants carry no configuration factory, so that call
-            // would throw. The base and its variants share config-ness, so a null here is correct.
-            IBuildingConfiguration carriedConfig = building.Configuration;
-            IMapModel capturedMap = map;
+            // Schedule an undoable swap to the variant whose id encodes the new slot state. It keeps
+            // the same BuildingId (so the HUD selection / panel survives) and carries the building's
+            // configuration across — null for a config-less building like the painter, which is
+            // correct (id-as-truth variants have no configuration factory). The action system runs it
+            // at a safe point and records it on the undo stack; its reverse swaps back.
+            var swap = new ExpandableXSwapVariantAction(
+                map, executor, building.Id, building.Transform, building.Configuration, building.Definition, targetDef);
+            playerActions.TryScheduleAction(swap);
 
-            _registry.EnqueueDeferred(() =>
-            {
-                capturedMap.DeleteBuilding(in buildingId);
-                capturedMap.CreateBuilding(targetDef, in transform, carriedConfig);
-            });
-
-            _logger.Info.Log($"ExpandableX-Core: slot change: queued swap {currentDefName} -> {targetDefName}");
+            _logger.Info.Log($"ExpandableX-Core: slot change: scheduled swap {currentDefName} -> {targetDefName}");
         }
 
         private static IReadOnlyDictionary<string, SlotRole> WithRole(

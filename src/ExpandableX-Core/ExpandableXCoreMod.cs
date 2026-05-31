@@ -9,7 +9,7 @@ using ILogger = Core.Logging.ILogger;
 [UsedImplicitly]
 public class ExpandableXCoreMod : IMod
 {
-    private readonly Hook _finalizeLogicUpdateHook;
+    private readonly Hook _initHook;
 
     public ExpandableXCoreMod(ILogger logger)
     {
@@ -19,14 +19,28 @@ public class ExpandableXCoreMod : IMod
         GameRewirers.AddRewirer<IBuildingModulesRewirer>(
             new ExpandableXBuildingModulesRewirer(logger, ExpandableXRegistry.Instance));
 
-        _finalizeLogicUpdateHook = DetourHelper.CreatePostfixHook<GameSessionOrchestrator>(
-            orchestrator => orchestrator.FinalizeLogicUpdate(),
-            _ => ExpandableXRegistry.Instance.DrainDeferred());
+        // Capture the session's PlayerActionManager once per session so slot changes can be
+        // dispatched as undoable actions. Init() is the stable, non-version-numbered orchestrator
+        // entry point; by the time it returns, PlayerActions (and LocalPlayer) are populated.
+        // The selector is a typed local to force the void (Action) hook overload, since the multi-arg
+        // CreatePostfixHook overloads are otherwise ambiguous with the result-returning ones.
+        System.Linq.Expressions.Expression<System.Action<GameSessionOrchestrator, IGameStartOptions, GlobalsData, IGameData>> initSelector =
+            (orchestrator, options, globals, data) => orchestrator.Init(options, globals, data);
+        _initHook = DetourHelper.CreatePostfixHook<GameSessionOrchestrator, IGameStartOptions, GlobalsData, IGameData>(
+            initSelector,
+            (orchestrator, _, _, _) =>
+            {
+                if (orchestrator.PlayerActions != null)
+                {
+                    ExpandableXRegistry.Instance.PlayerActions = orchestrator.PlayerActions;
+                    ExpandableXRegistry.Instance.LocalPlayer = orchestrator.LocalPlayer;
+                }
+            });
 
         logger.Info.Log("ExpandableX-Core loaded!");
     }
     public void Dispose()
     {
-        _finalizeLogicUpdateHook?.Dispose();
+        _initHook?.Dispose();
     }
 }
