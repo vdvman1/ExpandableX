@@ -44,13 +44,27 @@ The umbrella property a building may have, opting it in to player-adjustable siz
 _Avoid_: stretching, resizing, customisation, configurability
 
 **Connector slot**:
-A *position* on a `Building` where a connector can live, with a player-configurable **role**: `Input`, `Output`, or `Disabled`. Per-instance — each `Building` carries its own per-slot role assignment. Generalises the earlier "toggleable connector" concept: a binary toggleable (on/off, fixed direction) is the degenerate case of a slot whose roles are `{Input, Disabled}` (or `{Output, Disabled}`). The general tri-state case lets the player swap input ↔ output on a slot — the AND-gate's gameplay output is one example: the slot is `Output` on one piece (where the player wants the result), `Input` on the other pieces (where they want extra inputs to combine), `Disabled` where they want nothing.
+A *position* on a `Building` where a connector can live, with a player-configurable **role**: `Input`, `Output`, `Disabled`, or `Enabled`. Generalises the earlier "toggleable connector" concept: a binary toggleable (on/off, fixed direction) is the degenerate case of a slot whose roles are `{Input, Disabled}` (or `{Output, Disabled}`). The general tri-state case lets the player swap input ↔ output on a slot — the AND-gate's gameplay output is one example: the slot is `Output` on one piece (where the player wants the result), `Input` on the other pieces (where they want extra inputs to combine), `Disabled` where they want nothing.
 
-Per-instance state lives in an `IBuildingConfiguration` implementation we ship (call it e.g. `ExpandableXBuildingConfiguration`). The owning `MetaBuildingDefinition` declares the configuration type via `MetaBuildingDefinition<TConfig>` — the game's generic base — so the framework creates a fresh `TConfig` instance per placement. The interface requires a `Sync(ISerializationVisitor)` for saves/blueprints and a value-equality `Equals` for blueprint matching. **Blueprint-stable** by construction: copying a piece with slot states set produces a paste with the same slot states, no per-instance ids involved.
+Slot role is **not** per-instance state. It is encoded in the `MetaBuildingDefinition` id (see **Variant id** below). Each reachable combination of slot roles is a distinct generated `MetaBuildingDefinition`; changing a slot's role swaps the `Building` to the definition whose id encodes the new combination. This follows from connectors being read statically off the definition (an `IBuildingConfiguration` role would be stored but never consulted when the game assembles connector arrays). See [ADR-0008](docs/adr/0008-slot-state-encoded-in-definition-id.md). **Blueprint-stable** by construction: two identically-configured pieces share one definition, so copy/paste and save/load are exact, with no per-instance ids involved.
 _Avoid_: toggleable connector (use this only for the binary case), optional input, optional output, switchable pin
 
 **Toggleable connector** (deprecated alias):
 The earlier name for a `Connector slot` with role set `{Input, Disabled}` or `{Output, Disabled}`. Use **`Connector slot`** going forward, even when only two roles apply.
+
+**Connector reference**:
+How a `Connector slot` names the physical connector it controls. Connectors carry no id or name — their only intrinsic identity is their **pivot** (`Position_L` + `TileDirection`). Authors bind a slot by **connector type + visible index** (e.g. `Of<BuildingFluidJunction>(0)`), where the index is into the game's `BuildingConnectorsOfType<T>()` list *after* internal connectors are skipped (see **Auto-skip internal**), so the index matches the connectors the player can actually see. This mirrors the game's own connector-access idiom (`BeltPortSystem`, the splitters). The reference is resolved once, against the base `MetaBuildingDefinition`, into a concrete connector whose pivot variant generation then uses. The connector type also tells the framework which roles are legal (junction → `Enabled`-capable, input array → `Input`, output array → `Output`). An explicit pivot form (`At(pivot)`) is the escape hatch when index can't cleanly name a connector.
+_Avoid_: connector id, connector name, slot key
+
+**Variant id**:
+The `MetaBuildingDefinition` id of a framework-generated variant. Formed by suffixing the base definition id with `_ExpandableXConfigurable_` followed by one **role character** per slot, in slot order (see **Role** for the character alphabet). A piece with no slots keeps its base id unchanged. Because the id fully and deterministically encodes the slot state, it is both the storage of that state (per [ADR-0008](docs/adr/0008-slot-state-encoded-in-definition-id.md)) and the unit of blueprint identity.
+_Avoid_: variant key, slot hash, configuration string
+
+**Role**:
+What a `Connector slot` is set to. Four values, each with a single-character encoding for the **Variant id**: `Input` = `I`, `Output` = `O`, `Disabled` = `D`, `Enabled` = `E`. `Enabled` is **junction-specific** — it means a bidirectional connector (`BuildingFluidJunction`, signal junction) is active as a pass-through, both accepting and providing at once. `Input`/`Output` apply to directional connectors; `Disabled` removes the connector entirely.
+
+A slot's *allowed* roles are derived from its **Connector reference**'s connector type — there is exactly one "active" role per type (junction → `Enabled`, input connector → `Input`, output connector → `Output`), plus `Disabled`. `Enabled` doubles as the author-facing generic word for "active": writing `Enabled` against a non-junction connector is **auto-corrected** to that connector's native active role. Auto-correction happens at slot-resolution time, *before* id encoding, so a variant id is always canonical — `E` appears in an id only for a genuine junction. (Tri-state directional slots that flip `Input` ↔ `Output` are a separate case — see **Connector slot** and the AND gate.)
+_Avoid_: state, setting, mode, direction
 
 **Composable expansion**:
 The mechanism by which a single "logical building" the player perceives as one unit is in fact N connected `Building` entities, pattern-matched by a `SimulationSystem` into one `Simulation`. "Expanding" places more connected pieces; "shrinking" removes them. The mechanism documented for conveyors/belt ports in Shapez 2 — we adopt it explicitly for ExpandableX.
@@ -59,8 +73,12 @@ _Avoid_: resize, footprint change, multi-tile building, growable grid
 **Opt-in**:
 A `BuildingDefinition` is expandable **only** if something has registered expandability for it with `ExpandableX-Core`. There is no implicit/default expandability — game balance and intentional progression decisions (e.g. separately-unlocked straight vs bent stackers) demand explicit choices.
 
+**Registration**:
+The umbrella object a mod supplies for one expandable `MetaBuildingDefinition` (via **Register** / **Override**). It owns the building's `Layout`s and its `Expansion`s. It is the noun produced by the `Register` verb. In code: `Registration`.
+_Avoid_: entry, record, config
+
 **Layout** (umbrella):
-A specific valid state a player can put an expandable building into. Multiple layouts per expandable `MetaBuildingDefinition`. Layouts are catalog/registry entries, not per-instance state. Comes in two kinds — **`StaticLayout`** and **`DynamicLayout`** — which are implemented via two different runtime mechanisms (see [[project-dual-layout-implementation]]).
+A specific valid state a player can put an expandable building into. Multiple layouts per expandable `MetaBuildingDefinition`. Layouts are catalog/registry entries, not per-instance state. Comes in two kinds — **`StaticLayout`** and **`DynamicLayout`** — which are implemented via two different runtime mechanisms (see [[project-dual-layout-implementation]]). In code the two kinds are the nested forms `Layout.Static` / `Layout.Dynamic`.
 _Avoid_: form, composition, variant, pattern, shape
 
 **StaticLayout**:
@@ -81,17 +99,28 @@ A single `MetaBuildingDefinition` registration may carry static layouts, dynamic
 _Avoid_: parametric layout, generator, pattern (clashes with Shapez's `SimulationSystem` pattern-matching language at a different abstraction level)
 
 **Piece role**:
-Within a `DynamicLayout`, each `MetaBuildingDefinition` plays one of these roles:
+Each *generated* piece in a layout plays one of four roles: **Singleton**, **Head**, **Body**, or **Tail**. The **Default singleton** (below) is *not* a generated role — it is the pre-existing definition the framework swaps to and from, sitting outside this taxonomy.
 
-- **Default singleton** — the 1-piece case as it normally exists in the world. No real join connectors. Has **no** `IBuildingConfiguration` — typically the base-game's own `MetaBuildingDefinition` we don't modify (e.g. `LogicGateAndMetaBuildingDefinition` for AND). What a fresh player placement creates; what existing saves contain unmodified. Doesn't participate in path matching.
-- **Configurable singleton** — optional sibling of the default singleton. Visually identical; same connector layout; **but** is a `MetaBuildingDefinition<TConfig>` so it has `IBuildingConfiguration` and can hold per-instance connector-slot state. Used only when the player adjusts a slot on a default singleton — the framework swaps default → configurable to gain the per-instance state surface, then writes the slot change. The configurable singleton's existence is opt-in per registration: buildings whose default already has `IBuildingConfiguration` don't need a configurable singleton; buildings where players never want slot adjustments on the 1-piece case don't need one either.
-- **Head** — the start of a multi-piece chain. Its inner-facing join (toward bodies) is real; its outer-facing join is phantom. Implemented as `MetaBuildingDefinition<TConfig>` if the registration supports connector slots, otherwise as a plain `MetaBuildingDefinition`.
-- **Body** — interior of a multi-piece chain. Both join connectors are real, on opposite faces. Same Config / plain choice as head, per registration.
-- **Tail** — the end of a multi-piece chain. Mirror image of head. Same Config / plain choice as head, per registration.
+- **Singleton** — a standalone, non-chain piece with connector slots. Used by a `StaticLayout`'s lone piece (painter, each cutter size) and by a `DynamicLayout`'s 1-piece case (the configurable singleton). Generated as a family of id-encoded variants from a **Configurable base** (see below).
+- **Head** — the start of a multi-piece chain. Its inner-facing join (toward bodies) is real; its outer-facing join is phantom. If the registration declares connector slots, generated as a family of id-encoded variants like any slotted piece; otherwise a single plain `MetaBuildingDefinition`.
+- **Body** — interior of a multi-piece chain. Both join connectors are real, on opposite faces. Same slot treatment as head.
+- **Tail** — the end of a multi-piece chain. Mirror image of head. Same slot treatment as head.
 
-Connector slots are an opt-in feature of a registration, not intrinsic to any role. A registration that uses them must use them consistently — all chain pieces (head, body, tail) carry the same `TConfig`. A registration that doesn't need slot state declares all chain pieces plain; the configurable singleton is also omitted in that case. A `DynamicLayout` registration introduces **three new `MetaBuildingDefinition`s per expandable building** (head, body, tail), plus optionally a fourth (configurable singleton) when the default singleton lacks `IBuildingConfiguration` and the building wants 1-piece slot state. The drag-handle and slot-change actions swap between roles transparently — singleton → head + tail → head + body + tail → head + body + body + tail for expansion, default singleton ↔ configurable singleton for slot adjustments on the 1-piece case.
+Connector slots are opt-in per registration, not intrinsic to a role. When used, all chain pieces (head, body, tail) declare the same slots. A `DynamicLayout` registration introduces **three new configurable-base `MetaBuildingDefinition`s** (head, body, tail), each of which, if slotted, explodes into a family of id-encoded variant definitions (see **Variant id**) — plus optionally a singleton family for 1-piece slot state. The drag-handle and slot-change actions swap between definitions transparently — default singleton ↔ singleton variant for 1-piece slot adjustments, and singleton → head + tail → head + body + tail → … for expansion.
 
 _Avoid_: piece kind, piece class
+
+**Default singleton**:
+The pre-existing `MetaBuildingDefinition` the game places and that saves contain — the **swap origin**. Typically the base-game's own definition we never modify (e.g. `LogicGateAndMetaBuildingDefinition` for AND; the base `PainterMetaBuildingDefinition`; `HalfCutterMetaBuildingDefinition`). It carries no slot state and doesn't participate in path matching. The framework swaps *away from* it when the player first configures a slot, and *back to* it when all slots return to default — preserving save-compatibility, since uninstalling the mod then only affects buildings the player actively configured. Not a generated piece role; it is the origin the singleton variants are swapped to and from.
+_Avoid_: base singleton, plain singleton, original
+
+**Configurable base**:
+The `MetaBuildingDefinition` a slotted piece's connector slots are declared against — what defines **where the connectors are and which exist**. It must carry the **connector superset**: every slot's connector present (in its active role), because variant generation can only *remove* (`Disabled`) or *flip type* (`Input`↔`Output`) at an existing pivot — it cannot invent connector geometry (see [ADR-0009](docs/adr/0009-variant-generation-synthesizes-connectors.md)). A slot's *default role* is independent of the base and may be `Disabled` (so the default variant omits that connector). The configurable base often differs from the **Default singleton**: the painter's coincides (every paint junction already exists on the base painter), but the AND gate's is a *new* maximal `MetaBuildingDefinition` — the 3-input/1-output form — because the base-game AND lacks a 3rd-input position. The default roles, not the base, drive transitions (static-sequence steps, dynamic expansion).
+_Avoid_: superset definition, master definition, template
+
+**Variant override**:
+A registration-supplied mapping from a specific slot-role combination to a **named pre-existing `MetaBuildingDefinition`**, used instead of a synthesised variant. Declared on the piece (alongside its configurable base and slots). Serves three needs: mapping the all-defaults combination to the **Default singleton** (the swap origin); reusing definitions that already model a variant (the cutter's `HalfCutterMetaBuildingDefinition` / `FullCutterMetaBuildingDefinition`, never re-synthesised); and acting as a per-variant escape hatch when synthesis would yield a wrong model. The variant id of an overridden combination is the named definition's own id; decoding a placed building's id back to its slot state uses a session-init dictionary (`def id → slot state`), never id-string parsing, so arbitrary override ids are fine.
+_Avoid_: variant alias, definition mapping, manual variant
 
 **Join connector**:
 A dedicated connector type — distinct from the building's gameplay connectors (`BuildingItemInput/Output`, `BuildingSignalInput/Output`, etc.) — used exclusively by `DynamicLayout` pattern matching to decide which adjacent pieces form one logical building. Every piece in a `DynamicLayout`-registered family (head, body, tail) carries one join-in connector and one join-out connector — satisfying the `BuildingPathSimulationSystem<,,>` invariant of exactly one in + one out per piece.
@@ -110,7 +139,7 @@ This property is **robust against future vertical-expansion features**: even if 
 _Avoid_: void connector, null connector, dummy connector
 
 **Connector slots as a property of a layout**:
-Each `Layout` declares its own set of `Connector slot`s, including each slot's allowed role set (e.g. `{Input, Disabled}` for a binary toggle, `{Input, Output, Disabled}` for a full tri-state). The painter's single layout declares its paint-input slots with roles `{Input, Disabled}` — binary toggle. An AND-gate `DynamicLayout` piece declares its logic-signal slots with the full tri-state set so the player can move the gate's gameplay output between pieces. **There is no slot-only path that bypasses the layout concept** — layouts are the universal unit of registration.
+Each `Layout` declares its own set of `Connector slot`s; each slot's allowed role set follows from its connector type (see **Role**). The painter's single layout declares its paint **junction** slots with roles `{Enabled, Disabled}` — a binary toggle on a bidirectional connector. An AND-gate `DynamicLayout` piece declares its logic-signal slots with the full tri-state set so the player can move the gate's gameplay output between pieces. **There is no slot-only path that bypasses the layout concept** — layouts are the universal unit of registration.
 
 **Drag-handle expansion**:
 The player-facing interaction model for changing a building's layout. The base `Building` displays expansion handles on its sides; dragging a handle extends the logical building, auto-placing the additional `Building` entities. Anchoring expansion to a specific base building disambiguates "which building does this expansion attach to" — a class of problem build-and-detect (pure pattern-matching from manually-placed adjacent pieces) cannot solve when buildings of the same type sit one cell apart.
@@ -119,6 +148,15 @@ _Avoid_: drag-to-resize, grip, stretch handle
 **Build-and-detect**:
 A simpler, lower-fidelity precursor to drag-handle expansion. The framework's `SimulationSystem` pattern-matches any connected layout of registered pieces and constructs the right `Simulation`, without any explicit affordance. Used as a development proof-of-concept to validate that pattern-matching extensions work before investing in drag-handle UI. Suffers from the "which building does this expansion attach to" ambiguity in real use; not the intended end-user UX.
 _Avoid_: passive expansion, implicit expansion
+
+**Expansion**:
+A declared way a player can move a placed building between `Layout`s, owned by a `Registration`. Two kinds:
+
+- **Sequence** — a finite, ordered progression of `StaticLayout`s along one direction, advanced/retreated by *swap* (the cutter: Half → Full, or Half → Hex3 → Hex6). Steps carry per-step conditions (game mode, research); a locked intermediate step is **skipped** rather than blocking the ones past it.
+- **Chain** — unbounded multi-piece growth of a `DynamicLayout` along an axis (the AND gate). A singleton offers a handle on every allowed direction; committing one fixes the axis, after which only the two ends carry handles. Growing/shrinking adds or folds pieces.
+
+`Expansion` (the declared transition) is distinct from **Composable expansion** (the multi-piece *mechanism* a Chain rides on) and **Drag-handle expansion** (the *UX* that triggers expansions). In code: `Expansion.Sequence` / `Expansion.Chain`.
+_Avoid_: transition, progression, growth
 
 ### Mod structure
 
@@ -145,7 +183,7 @@ The `ExpandableX` mod's first release registers expandability for exactly three 
 
 - **One logic gate** (specific gate TBD — pick whichever has the cleanest existing model to tweak). Uses a `DynamicLayout` (unbounded 1×N expansion) plus connector slots. Implemented via multi-piece composition. The default singleton reuses the existing base-game `MetaBuildingDefinition` (e.g. `LogicGateAndMetaBuildingDefinition` for AND) — so existing saves and freshly-placed 1-piece gates stay on the unmodified base-game definition. We ship a *configurable singleton* with `IBuildingConfiguration` (sharing the default's visual) that the framework swaps in when the player adjusts a 1-piece slot, plus new head / body / tail definitions for the expanded cases.
 - **Cutter**. Uses `StaticLayout`s implemented via `MetaBuildingDefinition` swaps: the existing `HalfCutterMetaBuildingDefinition` (2-output default) and `FullCutterMetaBuildingDefinition` (4-output), plus **new `MetaBuildingDefinition`s we ship** for 3-piece and 6-piece hex-mode layouts. Exercises mode-conditional layouts and reuses an existing in-game definition we hadn't previously realised existed.
-- **Painter**. The existing `PainterMetaBuildingDefinition` is a 2×1 footprint — one cell carries the paint-input connectors, the other carries the shape input/output. v1 registers a single `StaticLayout` for it with toggleable paint-input connectors. No composable or dynamic expansion. Demonstrates the toggleable-only path.
+- **Painter**. The existing `PainterMetaBuildingDefinition` is a 2×1 footprint — one cell carries the paint **junction** connectors (three visible bidirectional `BuildingFluidJunction`s plus one internal `IOType==None` junction), the other carries the shape input/output. v1 registers a single `StaticLayout` for it with toggleable paint-junction slots (`{Enabled, Disabled}`). No composable or dynamic expansion. Demonstrates the toggleable-only path.
 
 This deliberately exercises every mechanism the framework promises (composable, toggleable, variant-aware, mode-conditional, static, dynamic) on a small surface. Adding more buildings is gated by modelling effort, not code — see [[project-modelling-is-bottleneck]]. Excluded for v1: platforms (deferred), stackers (no meaningful expansion), color mixer (cheap-to-add if there's time, but not committed), all other base-game buildings.
 
@@ -153,10 +191,10 @@ This deliberately exercises every mechanism the framework promises (composable, 
 
 - **"Connector side"** — at the simulation API level, connectors are indexed (`Input #0`), not per-side. At the `MetaBuildingDefinition` layer they live in eight typed arrays (`BeltInputs/Outputs`, `BeltPortInputs/Outputs`, `FluidInputs/Outputs/Junctions`, `SignalInputs/Outputs/Junctions`). Whether individual array entries carry a per-side position (or just a tile offset, or something else) still needs verification — `BuildingItemInput`, `BeltPortInput`, etc. are not yet decompiled.
 - **Multi-tile single pieces** — **resolved.** `MetaBuildingDefinition.Tiles[]` makes single multi-tile buildings native. The painter, mixer, and stacker are single multi-tile `MetaBuildingDefinition`s, not compositions. Our framework only invokes multi-piece composition for `DynamicLayout`s, not for representing multi-tile single buildings.
-- **Per-instance `Configuration`** — **resolved.** Per-instance state lives in `BuildingInstance.Configuration` (`IBuildingConfiguration`), distinct from the per-type `Configuration` nested classes on `MetaBuildingDefinition`s. A definition declares its instance-configuration type via the generic `MetaBuildingDefinition<TConfig>`. The interface requires `Sync(visitor)` and `Equals` — visitor-pattern serialisation and value equality, which together cover saves and blueprint matching. See [`docs/research/shapez2-internals.md`](docs/research/shapez2-internals.md#per-instance-state-mechanism-resolved).
+- **Per-instance `Configuration` for slot state** — **resolved, reversed.** Slot state does *not* live in `BuildingInstance.Configuration`. Connectors are read statically off the `MetaBuildingDefinition`, so a per-instance role would be stored but never consulted when the game assembles connector arrays. Slot state is therefore encoded in the definition id and realised as generated variant definitions (see **Variant id** and [ADR-0008](docs/adr/0008-slot-state-encoded-in-definition-id.md)). `IBuildingConfiguration` / `MetaBuildingDefinition<TConfig>` are not used for slot state. (The mechanism itself is still documented in [`docs/research/shapez2-internals.md`](docs/research/shapez2-internals.md#per-instance-state-mechanism-resolved); we simply don't use it for this.)
 - **Pattern-matching extension surface** — only one `SimulationSystem` class surfaced in the search; building types don't appear to own per-type systems. The multi-piece pattern-matching mechanism we need for `DynamicLayout` is likely generic and parameterised by `MetaBuildingDefinition` data. Whether ShapezShifter exposes a hook for it (or we'd have to add patches) is the next thing to investigate.
 
-- **Singleton connector slots** — **resolved.** A `DynamicLayout` registration may optionally supply a *configurable singleton* alongside the default singleton (see Piece role). The framework swaps default → configurable on the first slot adjustment, so 1-piece toggling works without breaking pre-existing saves of the default. The configurable singleton is opt-in per registration.
+- **Singleton connector slots** — **resolved.** A `DynamicLayout` registration may optionally supply a *configurable singleton* alongside the default singleton (see Piece role) — now a family of id-encoded variant definitions, not a single config-bearing definition. The framework swaps default → the variant encoding the new slot state on the first slot adjustment, so 1-piece toggling works without breaking pre-existing saves of the default. The configurable singleton is opt-in per registration.
 
 - **Dynamic-layout disambiguation** — **resolved.** `DynamicLayout` matching uses dedicated join connectors and the game's existing `BuildingPathSimulationSystem<,,>` mechanism (pivot equality with counterpart matching). Two pieces only fuse when their join connectors line up; rotation and position differences naturally keep separate logical buildings apart.
 
@@ -172,4 +210,4 @@ This deliberately exercises every mechanism the framework promises (composable, 
 >
 > **User:** "And the painter?"
 >
-> **Dev:** "Painter is just a `StaticLayout` pointing at the existing `PainterMetaBuildingDefinition` (a 2×1) with its paint-input connectors marked toggleable. No composable or dynamic expansion."
+> **Dev:** "Painter is just a `StaticLayout` pointing at the existing `PainterMetaBuildingDefinition` (a 2×1) with its three visible paint **junctions** marked as `{Enabled, Disabled}` slots. No composable or dynamic expansion."
