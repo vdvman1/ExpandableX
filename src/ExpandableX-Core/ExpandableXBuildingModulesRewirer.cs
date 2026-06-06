@@ -33,6 +33,13 @@ namespace ExpandableX.Core
 
             _logger.Info.Log($"ExpandableX-Core: modules rewirer firing — {setsByBase.Count} configurable base(s)");
 
+            GameMode mode = _registry.CurrentMode;
+            if (mode == null)
+            {
+                _logger.Info.Log("ExpandableX-Core: modules rewirer: CurrentMode not set, skipping");
+                return;
+            }
+
             foreach (PieceVariantSet set in setsByBase.Values)
             {
 #pragma warning disable CS0618
@@ -49,7 +56,25 @@ namespace ExpandableX.Core
 #pragma warning disable CS0618
                     BuildingDefinitionId defId = new BuildingDefinitionId(defName);
 #pragma warning restore CS0618
-                    modulesLookup.BuildingModulesMap[defId] = new ConfigurableVariantModules(inner, _registry, _logger);
+
+                    var wrapped = new ConfigurableVariantModules(inner, _registry, _logger);
+
+                    if (modulesLookup.BuildingModulesMap.ContainsKey(defId))
+                    {
+                        // Already registered (the base definition, or an override target): replace the
+                        // provider only — its BuildingSimulationData entry is already present.
+                        modulesLookup.BuildingModulesMap[defId] = wrapped;
+                    }
+                    else if (mode.Buildings._DefinitionsById.TryGetValue(defId, out IBuildingDefinition variantDef))
+                    {
+                        // Synthesised variant: register in BOTH maps so the definition-level
+                        // GetInfoModules(defId) path (the native def panel content) resolves too.
+                        modulesLookup.AddModule(defId, variantDef, wrapped);
+                    }
+                    else
+                    {
+                        _logger.Info.Log($"ExpandableX-Core: modules rewirer: variant '{defName}' not found in definitions, skipping");
+                    }
                 }
 
                 _logger.Info.Log($"ExpandableX-Core: modules rewirer: slot UI on {defNames.Count} definition(s) for base '{set.BaseDefinitionId}'");
