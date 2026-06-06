@@ -74,7 +74,7 @@ _Avoid_: resize, footprint change, multi-tile building, growable grid
 A `BuildingDefinition` is expandable **only** if something has registered expandability for it with `ExpandableX-Core`. There is no implicit/default expandability — game balance and intentional progression decisions (e.g. separately-unlocked straight vs bent stackers) demand explicit choices.
 
 **Registration**:
-The umbrella object a mod supplies for one expandable `MetaBuildingDefinition` (via **Register** / **Override**). It owns the building's `Layout`s and its `Expansion`s. It is the noun produced by the `Register` verb. In code: `Registration`.
+The umbrella object a mod supplies for one expandable **building family** (via **Register** / **Override**). It owns the family's `Layout`s and its `Expansion`s. A family may span **multiple `MetaBuildingDefinition`s across multiple groups** — the cutter family owns `Half` (group `CutterHalfVariant`) and `Full` (group `CutterDefaultVariant`); the painter family happens to be a single definition. `RegistrationId` is a **logical family identifier the author chooses** (e.g. `"Cutter"`), *not* a game group id; the actual game definitions are referenced per-`Layout` via each piece's configurable-base id. It is the noun produced by the `Register` verb. In code: `Registration`.
 _Avoid_: entry, record, config
 
 **Layout** (umbrella):
@@ -152,10 +152,15 @@ _Avoid_: passive expansion, implicit expansion
 **Expansion**:
 A declared way a player can move a placed building between `Layout`s, owned by a `Registration`. Two kinds:
 
-- **Sequence** — a finite, ordered progression of `StaticLayout`s along one direction, advanced/retreated by *swap* (the cutter: Half → Full, or Half → Hex3 → Hex6). Steps carry per-step conditions (game mode, research); a locked intermediate step is **skipped** rather than blocking the ones past it.
+- **Sequence** — a finite, ordered progression of `StaticLayout`s along one direction, advanced/retreated by *swap* (the cutter: Half → Full, or Half → Hex3 → Hex6). Steps carry per-step **Condition**s; a locked intermediate step is **skipped** rather than blocking the ones past it.
 - **Chain** — unbounded multi-piece growth of a `DynamicLayout` along an axis (the AND gate). A singleton offers a handle on every allowed direction; committing one fixes the axis, after which only the two ends carry handles. Growing/shrinking adds or folds pieces.
 
 `Expansion` (the declared transition) is distinct from **Composable expansion** (the multi-piece *mechanism* a Chain rides on) and **Drag-handle expansion** (the *UX* that triggers expansions). In code: `Expansion.Sequence` / `Expansion.Chain`.
+_Avoid_: transition, progression, growth
+
+**Condition**:
+A test gating an `Expansion` step or whole expansion (e.g. "only in hex scenarios", "only once research X is unlocked"). To keep ExpandableX-Core game-agnostic (see [ADR-0011](docs/adr/0011-orchestrate-by-id-delegate-authoring-to-shapezshifter.md)), a condition is an **author-provided predicate** evaluated against live game state when available expansions are computed — Core provides only the generic `When(predicate, description)`; the consumer reads game state for the game-specific checks (e.g. hex = `ShapesConfiguration.PartCount == 6`, which is scenario-driven, so there is no built-in "hex mode" flag). Common-condition helpers (`RequiresShapeParts`, `RequiresResearch`) may be added later but stay predicates underneath.
+_Avoid_: rule, gate, requirement, ExpansionContext (the prototype's framework-populated context is not used)
 _Avoid_: transition, progression, growth
 
 ### Mod structure
