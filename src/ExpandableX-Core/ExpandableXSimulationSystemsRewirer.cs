@@ -15,6 +15,8 @@ namespace ExpandableX.Core
     /// </summary>
     internal class ExpandableXSimulationSystemsRewirer : ISimulationSystemsRewirer
     {
+        private static bool _loggedAvailableDefinitions;
+
         private readonly ILogger _logger;
         private readonly ExpandableXRegistry _registry;
 
@@ -42,45 +44,23 @@ namespace ExpandableX.Core
             ICollection<ISimulationSystem> simulationSystems,
             SimulationSystemsDependencies dependencies)
         {
-            string sourceGroupIdName = registration.RegistrationId;
+            // RegistrationId is a logical family id, NOT a game group (ADR-0011 / family-scoped
+            // registrations). A family may span several groups (cutter: CutterHalfVariant +
+            // CutterDefaultVariant) and a slot-less family (sequences only) needs no hidden group at
+            // all. So hidden groups are created lazily, keyed by each base definition's own group,
+            // only when a piece actually synthesises variants.
+            var hiddenGroups = new Dictionary<BuildingDefinitionGroupId, BuildingDefinitionGroup>();
 
-#pragma warning disable CS0618
-            BuildingDefinitionGroupId sourceGroupId = new BuildingDefinitionGroupId(sourceGroupIdName);
-#pragma warning restore CS0618
-
-            if (dependencies.Mode.Buildings.GetDefinitionGroup(sourceGroupId) is not BuildingDefinitionGroup sourceGroup)
-            {
-                _logger.Info.Log($"ExpandableX-Core: no BuildingDefinitionGroup '{sourceGroupIdName}' — skipping registration");
-                return;
-            }
-
-            string configurableGroupIdName = sourceGroupIdName + "_ExpandableXConfigurable";
-
-#pragma warning disable CS0618
-            BuildingDefinitionGroupId configurableGroupId = new BuildingDefinitionGroupId(configurableGroupIdName);
-#pragma warning restore CS0618
-
-            if (dependencies.Mode.Buildings._VariantsById.ContainsKey(configurableGroupId))
-            {
-                _logger.Info.Log($"ExpandableX-Core: configurable group '{configurableGroupIdName}' already exists this session — skipping");
-                return;
-            }
-
-            BuildingDefinitionGroup configurableGroup = CreateHiddenGroup(configurableGroupId, sourceGroup);
-
-            int generated = 0;
+            int synthesised = 0;
             foreach (Layout layout in registration.Layouts)
             {
                 foreach (PieceSpec piece in layout.EnumeratePieceSpecs())
                 {
-                    generated += GenerateVariants(registration, layout, piece, sourceGroup, configurableGroup, simulationSystems, dependencies);
+                    synthesised += GenerateVariants(registration, layout, piece, hiddenGroups, simulationSystems, dependencies);
                 }
             }
 
-            dependencies.Mode.Buildings._VariantsById.Add(configurableGroupId, configurableGroup);
-            dependencies.Mode.Buildings._All.Add(configurableGroup);
-
-            _logger.Info.Log($"ExpandableX-Core: '{sourceGroupIdName}' → hidden group '{configurableGroupIdName}' with {generated} synthesised variant(s)");
+            _logger.Info.Log($"ExpandableX-Core: family '{registration.RegistrationId}': {synthesised} synthesised variant(s) across {hiddenGroups.Count} hidden group(s)");
         }
 
         /// <summary>Generate every variant for one piece against its configurable base. Returns the number of synthesised definitions created.</summary>
@@ -88,8 +68,7 @@ namespace ExpandableX.Core
             Registration registration,
             Layout layout,
             PieceSpec piece,
-            BuildingDefinitionGroup sourceGroup,
-            BuildingDefinitionGroup configurableGroup,
+            Dictionary<BuildingDefinitionGroupId, BuildingDefinitionGroup> hiddenGroups,
             ICollection<ISimulationSystem> simulationSystems,
             SimulationSystemsDependencies dependencies)
         {
@@ -99,10 +78,10 @@ namespace ExpandableX.Core
 
             if (!dependencies.Mode.Buildings._DefinitionsById.TryGetValue(baseDefId, out IBuildingDefinition baseDef))
             {
-                // Base definition id is asset-assigned; if it's wrong the available ids in the source
-                // group are the discovery hint (TODO(in-game): set the real painter base id here).
-                string available = string.Join(", ", sourceGroup.Definitions.Select(d => d.Id.Name));
-                _logger.Info.Log($"ExpandableX-Core: base definition '{piece.BaseDefinitionId}' not found for {piece.Role} piece; available in '{registration.RegistrationId}': [{available}] — skipping piece");
+                // Base definition ids are asset-assigned; if one is wrong, the one-time discovery dump
+                // below lists every real id so the consumer can correct its registration.
+                _logger.Info.Log($"ExpandableX-Core: base definition '{piece.BaseDefinitionId}' not found for {piece.Role} piece in family '{registration.RegistrationId}' — skipping piece");
+                LogAvailableDefinitionsOnce(dependencies);
                 return 0;
             }
 
@@ -120,7 +99,7 @@ namespace ExpandableX.Core
             {
                 string comboKey = VariantEncoder.ComboKey(expansion.ExpandedSlots, variant.SlotState);
                 string defIdName = ResolveOrSynthesise(
-                    variant, comboKey, baseDef, piece, expansion, resolver, configurableGroup, simulationSystems, dependencies, ref synthesised);
+                    variant, baseDef, piece, expansion, resolver, hiddenGroups, simulationSystems, dependencies, ref synthesised);
 
                 defIdByComboKey[comboKey] = defIdName;
                 placements.Add((defIdName, variant.SlotState));
@@ -139,17 +118,18 @@ namespace ExpandableX.Core
         /// <summary>Map a combination to its definition id, creating a synthesised definition when it isn't the base or an override.</summary>
         private string ResolveOrSynthesise(
             Variant variant,
-            string comboKey,
             IBuildingDefinition baseDef,
             PieceSpec piece,
             PieceExpansion expansion,
             ConnectorDataResolver resolver,
-            BuildingDefinitionGroup configurableGroup,
+            Dictionary<BuildingDefinitionGroupId, BuildingDefinitionGroup> hiddenGroups,
             ICollection<ISimulationSystem> simulationSystems,
             SimulationSystemsDependencies dependencies,
             ref int synthesised)
         {
             // The combination matching the base's own connector roles is the base definition itself.
+            // (A slot-less piece — e.g. a cutter sequence layout — always matches here, so it's
+            // cataloged against its base def id and synthesises nothing.)
             if (MatchesBase(expansion.ExpandedSlots, variant.SlotState, resolver))
             {
                 return baseDef.Id.Name;
@@ -164,8 +144,16 @@ namespace ExpandableX.Core
 
             if (dependencies.Mode.Buildings._DefinitionsById.ContainsKey(defId))
             {
-                // A pre-existing definition (explicit override) — reuse it, don't synthesise.
+                // Pre-existing definition — an explicit override, or one we already synthesised this
+                // session (re-run). Reuse it; don't synthesise again.
                 return defIdName;
+            }
+
+            BuildingDefinitionGroup? hiddenGroup = GetOrCreateHiddenGroup(baseDef, hiddenGroups, dependencies);
+            if (hiddenGroup is null)
+            {
+                _logger.Info.Log($"ExpandableX-Core: could not resolve a group for base '{baseDef.Id.Name}'; cataloging variant '{defIdName}' as the base def");
+                return baseDef.Id.Name;
             }
 
             IBuildingConnectorData synthData = ConnectorSynthesizer.Synthesize(
@@ -192,11 +180,68 @@ namespace ExpandableX.Core
 
             variantDef.CustomData.Attach(synthData);
 
-            configurableGroup.AddInternalVariant(variantDef);
+            hiddenGroup.AddInternalVariant(variantDef);
             dependencies.Mode.Buildings._DefinitionsById.Add(variantDef.Id, variantDef);
             AttachPainterSimulation(variantDef, simulationSystems, dependencies);
             synthesised++;
             return defIdName;
+        }
+
+        /// <summary>
+        /// The hidden, non-buildable group that houses a base definition's synthesised variants —
+        /// one per base group, created lazily and copying that group's render/placement properties.
+        /// Idempotent across same-session re-runs. Returns null if the base's group can't be found.
+        /// </summary>
+        private BuildingDefinitionGroup? GetOrCreateHiddenGroup(
+            IBuildingDefinition baseDef,
+            Dictionary<BuildingDefinitionGroupId, BuildingDefinitionGroup> cache,
+            SimulationSystemsDependencies dependencies)
+        {
+            if (!baseDef.CustomData.TryGet<IBuildingDefinitionGroup>(out IBuildingDefinitionGroup groupData)
+                || groupData is not BuildingDefinitionGroup baseGroup)
+            {
+                return null;
+            }
+
+#pragma warning disable CS0618
+            BuildingDefinitionGroupId hiddenId = new BuildingDefinitionGroupId(baseGroup.Id.Id + "_ExpandableXConfigurable");
+#pragma warning restore CS0618
+
+            if (cache.TryGetValue(hiddenId, out BuildingDefinitionGroup cached))
+            {
+                return cached;
+            }
+
+            if (dependencies.Mode.Buildings._VariantsById.TryGetValue(hiddenId, out IBuildingDefinitionGroup existing)
+                && existing is BuildingDefinitionGroup existingGroup)
+            {
+                cache[hiddenId] = existingGroup; // already created this session
+                return existingGroup;
+            }
+
+            BuildingDefinitionGroup hiddenGroup = CreateHiddenGroup(hiddenId, baseGroup);
+            dependencies.Mode.Buildings._VariantsById.Add(hiddenId, hiddenGroup);
+            dependencies.Mode.Buildings._All.Add(hiddenGroup);
+            cache[hiddenId] = hiddenGroup;
+            return hiddenGroup;
+        }
+
+        /// <summary>Once per process, dump every definition id so a consumer can find the real id behind a wrong base id.</summary>
+        private void LogAvailableDefinitionsOnce(SimulationSystemsDependencies dependencies)
+        {
+            if (_loggedAvailableDefinitions)
+            {
+                return;
+            }
+
+            _loggedAvailableDefinitions = true;
+            var ids = dependencies.Mode.Buildings._DefinitionsById.Keys.Select(k => k.Name).OrderBy(n => n);
+            _logger.Info.Log($"ExpandableX-Core: discovery — all definition ids: {string.Join(", ", ids)}");
+
+            // Also dump research upgrade ids so consumers can find the id behind a research gate
+            // (e.g. the cutter unlock), the same way they find a base definition id.
+            var researchIds = dependencies.Mode.ResearchLayout.AllUpgrades.Select(u => u.Id.ToString()).OrderBy(n => n);
+            _logger.Info.Log($"ExpandableX-Core: discovery — all research upgrade ids: {string.Join(", ", researchIds)}");
         }
 
         /// <summary>True when every slot's role equals the role its base connector already has (so synthesis would reproduce the base).</summary>

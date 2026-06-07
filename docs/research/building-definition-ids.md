@@ -1,0 +1,68 @@
+# Base-game building definition ids
+
+Captured from the rewirer's discovery dump (`discovery — all definition ids:`) on 2026-06-07.
+These are the runtime `BuildingDefinitionId.Name`s the framework references by id (ADR-0011).
+Asset-assigned, so re-verify against a fresh dump if the game updates.
+
+## Cutter family — note the semantics (corrected)
+
+The naming is misleading; confirmed in-game:
+
+- **`CutterHalfInternalVariant`** — the **half-destroyer**: deletes half the shape, **1 output**. (Group `CutterHalfVariant`.)
+- **`CutterDefaultInternalVariant`** — the **2-output cutter**: splits a shape into its two halves. (Group `CutterDefaultVariant`, which `GameBuildings` confusingly calls `FullCutterDefinitionGroupId`.)
+- There is **no 4-output / quarter cutter** in the base game. A quarter cutter (and the hex 3/6 cutters) would be new authored buildings with new simulations (ADR-0011), not base-game ids.
+
+So the cutter sequence we ship is half-destroyer → 2-output cutter (a happy accident worth keeping), gated on the cutter research; the quarter and hex cutters are future authored buildings.
+
+## Generated variants (ours)
+
+The painter slot-variants the framework synthesised appear in the dump too, e.g.
+`PainterDefaultInternalVariant_ExpandableXConfigurable_DEE` (D/E/I/O role chars per slot — see ADR-0008).
+
+## Full list
+
+```
+BeltDefaultForwardInternalVariant, BeltDefaultLeftInternalVariant, BeltDefaultLeftInternalVariantMirrored,
+BeltFilterDefaultInternalVariant, BeltFilterDefaultInternalVariantMirrored, BeltPortReceiverInternalVariant,
+BeltPortSenderInternalVariant, BeltReaderDefaultInternalVariant, BeltReaderDefaultInternalVariantMirrored,
+ButtonDefaultInternalVariant, ConstantSignalDefaultInternalVariant, ControlledSignalReceiverInternalVariant,
+ControlledSignalReceiverInternalVariantMirrored, ControlledSignalTransmitterInternalVariant,
+ControlledSignalTransmitterInternalVariantMirrored, CrystalGeneratorDefaultInternalVariant,
+CrystalGeneratorDefaultInternalVariantMirrored, CutterDefaultInternalVariant, CutterDefaultInternalVariantMirrored,
+CutterHalfInternalVariant, Display2x2InternalVariant, Display2x2InternalVariantMirrored, Display3x3InternalVariant,
+Display3x3InternalVariantMirrored, DisplayDefaultInternalVariant, ExtractorDefaultInternalVariant,
+FluidPortReceiverInternalVariant, FluidPortSenderInternalVariant, FluidStorageDefaultInternalVariant,
+FluidStorageDefaultInternalVariantMirrored, HalvesSwapperDefaultInternalVariant, LabelDefaultInternalVariant,
+Lift1DownBackwardInternalVariant, Lift1DownForwardInternalVariant, Lift1DownLeftInternalVariant,
+Lift1DownLeftInternalVariantMirrored, Lift1UpBackwardInternalVariant, Lift1UpForwardInternalVariant,
+Lift1UpLeftInternalVariant, Lift1UpLeftInternalVariantMirrored, Lift2DownBackwardInternalVariant,
+Lift2DownForwardInternalVariant, Lift2DownLeftInternalVariant, Lift2DownLeftInternalVariantMirrored,
+Lift2UpBackwardInternalVariant, Lift2UpForwardInternalVariant, Lift2UpLeftInternalVariant,
+Lift2UpLeftInternalVariantMirrored, LogicGateAndInternalVariant, LogicGateCompareInternalVariant,
+LogicGateCompareInternalVariantMirrored, LogicGateIfInternalVariant, LogicGateIfInternalVariantMirrored,
+LogicGateNotInternalVariant, LogicGateOrInternalVariant, LogicGateXOrInternalVariant, Merger2To1LInternalVariant,
+Merger2To1LInternalVariantMirrored, Merger3To1InternalVariant, MergerTShapeInternalVariant, MixerDefaultInternalVariant,
+MixerDefaultInternalVariantMirrored, PainterDefaultInternalVariant, PainterDefaultInternalVariantMirrored,
+PinPusherDefaultInternalVariant, Pipe2UpBackwardInternalVariant, Pipe2UpForwardInternalVariant,
+Pipe2UpLeftInternalVariant, Pipe2UpLeftInternalVariantMirrored, PipeCrossInternalVariant, PipeForwardInternalVariant,
+PipeGateDefaultInternalVariant, PipeGateDefaultInternalVariantMirrored, PipeJunctionInternalVariant,
+PipeLeftInternalVariant, PipeLeftInternalVariantMirrored, PipeLift, PipeLiftInverter, PipeUp,
+PipeUpBackwardInternalVariant, PipeUpForwardInternalVariant, PipeUpLeftInternalVariant, PipeUpLeftInternalVariantMirrored,
+PumpDefaultInternalVariant, RotatorHalfInternalVariant, RotatorOneQuadCCWInternalVariant, RotatorOneQuadInternalVariant,
+SandboxFluidProducerDefaultInternalVariant, SandboxItemProducerDefaultInternalVariant, Splitter1To2LInternalVariant,
+Splitter1To2LInternalVariantMirrored, Splitter1To3InternalVariant, SplitterOverflowLInternalVariant,
+SplitterOverflowLInternalVariantMirrored, SplitterTShapeInternalVariant, StackerDefaultInternalVariant,
+StackerDefaultInternalVariantMirrored, StackerStraightInternalVariant, TrashDefaultInternalVariant,
+VirtualAnalyzerDefaultInternalVariant, VirtualAnalyzerDefaultInternalVariantMirrored,
+VirtualCrystalGeneratorDefaultInternalVariant, VirtualCrystalGeneratorDefaultInternalVariantMirrored,
+VirtualHalfCutterDefaultInternalVariant, VirtualHalvesSwapperDefaultInternalVariant, VirtualPainterDefaultInternalVariant,
+VirtualPainterDefaultInternalVariantMirrored, VirtualPinPusherDefaultInternalVariant, VirtualRotatorCCWInternalVariant,
+VirtualRotatorDefaultInternalVariant, VirtualStackerDefaultInternalVariant, VirtualStackerDefaultInternalVariantMirrored,
+VirtualUnstackerDefaultInternalVariant, VirtualUnstackerDefaultInternalVariantMirrored,
+WireDefault1UpBackwardInternalVariant, WireDefault1UpForwardInternalVariant, WireDefault1UpLeftInternalVariant,
+WireDefault1UpLeftInternalVariantMirrored, WireDefault2UpBackwardInternalVariant, WireDefault2UpForwardInternalVariant,
+WireDefault2UpLeftInternalVariant, WireDefault2UpLeftInternalVariantMirrored, WireDefaultBridgeInternalVariant,
+WireDefaultCrossInternalVariant, WireDefaultForwardInternalVariant, WireDefaultJunctionInternalVariant,
+WireDefaultLeftInternalVariant, WireDefaultLeftInternalVariantMirrored, WireGlobalTransmitterReceiverInternalVariant,
+WireTransmitterReceiverInternalVariant, WireTransmitterSenderInternalVariant
+```

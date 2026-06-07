@@ -6,11 +6,15 @@ using ILogger = Core.Logging.ILogger;
 namespace ExpandableX.Core
 {
     /// <summary>
-    /// Wraps a building's existing module provider and appends one dropdown per connector slot.
-    /// Selecting a role swaps the building to the variant whose id encodes the new slot state
-    /// (id-as-truth, ADR-0008) via a deferred Delete+Create. Only reachable roles are offered —
-    /// a role is reachable iff the combination it produces exists in the piece's combo table
-    /// (pruned combinations were never generated), so membership is the validity check.
+    /// Wraps a building's existing module provider and appends the expandability UI: one button per
+    /// connector-slot role, plus expand/shrink buttons for sequence layouts. Acting on a button swaps
+    /// the building to the target variant/layout definition (id-as-truth, ADR-0008) via the undoable
+    /// swap action. A slot role is offered iff its combination exists in the piece's table (pruned
+    /// ones are absent → membership is the validity check); invalid/current options are shown disabled.
+    ///
+    /// UI text uses <see cref="RawText"/> — i.e. it is NOT translated. That's an accepted placeholder:
+    /// translation support is deferred (and may never be needed if the eventual drag-handle UI doesn't
+    /// surface this text). See the project note on untranslated UI text.
     /// </summary>
     internal class ConfigurableVariantModules : IBuildingModules
     {
@@ -59,8 +63,10 @@ namespace ExpandableX.Core
                     // button is shown but disabled (ActiveIf=false) so the player sees the option exists.
                     bool selectable = reachable && !isCurrent;
 
-                    IMapModel capturedMap = map;
-                    BuildingModel capturedBuilding = building;
+                    // The closures below run later (button click / each frame). It's safe to capture
+                    // map/building/currentDefName and the per-iteration loop locals directly: foreach
+                    // variables are per-iteration in C#, and the rest are method-scope and never
+                    // reassigned — no defensive per-iteration copies are needed.
                     buttons.Add(new PlacementKeybindingHintData
                     {
                         OverrideTitle = new RawText(isCurrent ? $"{role} (current)" : role.ToString()),
@@ -69,7 +75,7 @@ namespace ExpandableX.Core
                         {
                             if (selectable)
                             {
-                                SwapTo(capturedMap, capturedBuilding, currentDefName, targetDef);
+                                SwapTo(map, building, currentDefName, targetDef);
                             }
                         },
                     });
@@ -77,6 +83,54 @@ namespace ExpandableX.Core
 
                 yield return new HUDSidePanelModuleActionButtons.Data(buttons);
             }
+
+            // Sequence expand/shrink (the cutter etc.): two buttons driven by the sequence engine.
+            IReadOnlyList<ExpansionOption> expansions = SequenceEngine.OptionsFor(set.Registration, set.Layout);
+            if (expansions.Count > 0)
+            {
+                var expandButtons = new List<PlacementKeybindingHintData>(expansions.Count);
+                foreach (ExpansionOption option in expansions)
+                {
+                    // TODO(dynamic layouts): sequences only ever target static layouts. When chains
+                    // (the AND gate) gain expand/shrink, the target may be a Layout.Dynamic, so this
+                    // becomes a proper per-kind dispatch rather than a Static cast.
+                    string? targetDef = (option.TargetLayout as Layout.Static)?.Piece.BaseDefinitionId;
+                    bool enabled = option.Available && targetDef != null;
+
+                    // Direct capture is safe (see the slot loop above): option/targetDef/enabled are
+                    // per-iteration; map/building/currentDefName are method-scope and never reassigned.
+                    expandButtons.Add(new PlacementKeybindingHintData
+                    {
+                        OverrideTitle = new RawText(DescribeOption(option)),
+                        ActiveIf = () => enabled,
+                        Handler = () =>
+                        {
+                            if (enabled && targetDef != null)
+                            {
+                                SwapTo(map, building, currentDefName, targetDef);
+                            }
+                        },
+                    });
+                }
+
+                yield return new HUDSidePanelModuleActionButtons.Data(expandButtons);
+            }
+        }
+
+        private static string DescribeOption(ExpansionOption option)
+        {
+            string label = option.Kind == ExpansionKind.Expand ? "Expand" : "Shrink";
+            if (option.SkippedLayoutIds.Count > 0)
+            {
+                label += $" (skips {string.Join(", ", option.SkippedLayoutIds)})";
+            }
+
+            if (!option.Available && option.BlockedReason != null)
+            {
+                label += $" — {option.BlockedReason}";
+            }
+
+            return label;
         }
 
         public IEnumerable<IHUDSidePanelModuleData> GetInfoModules(IBuildingDefinition definition) =>

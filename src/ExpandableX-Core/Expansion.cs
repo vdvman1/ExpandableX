@@ -12,47 +12,31 @@ namespace ExpandableX.Core
     }
 
     // ---- Expansion conditions ----------------------------------------------
-
-    /// <summary>
-    /// The game state an expansion condition is evaluated against. Mode is a string id to keep
-    /// Core decoupled from the game's GameMode type; the framework populates it from the live mode.
-    /// </summary>
-    public sealed record ExpansionContext(string? CurrentModeId, IReadOnlyCollection<string> Researched);
+    //
+    // A condition is an author-provided predicate evaluated against live game state when available
+    // expansions are computed. ExpandableX-Core stays game-agnostic (ADR-0011): it offers only the
+    // generic When(...); the consumer reads game state for game-specific checks (e.g. hex shapes via
+    // ShapesConfiguration.PartCount, research progress). Common-condition helpers may be layered on
+    // top later but stay predicates underneath.
 
     public interface IExpansionCondition
     {
-        bool IsMet(ExpansionContext ctx);
+        bool IsMet();
         string Describe();
     }
 
     public static class ExpansionConditions
     {
-        public static IExpansionCondition RequiresMode(string modeId) => new ModeImpl(modeId);
-        public static IExpansionCondition RequiresResearch(string researchId) => new ResearchImpl(researchId);
-        public static IExpansionCondition Custom(Func<ExpansionContext, bool> predicate, string description) => new CustomImpl(predicate, description);
+        /// <summary>A condition met when <paramref name="predicate"/> returns true at evaluation time.</summary>
+        public static IExpansionCondition When(Func<bool> predicate, string description) =>
+            new PredicateCondition(predicate, description);
 
-        private sealed class ModeImpl : IExpansionCondition
+        private sealed class PredicateCondition : IExpansionCondition
         {
-            private readonly string _modeId;
-            public ModeImpl(string modeId) { _modeId = modeId; }
-            public bool IsMet(ExpansionContext ctx) => string.Equals(ctx.CurrentModeId, _modeId, StringComparison.Ordinal);
-            public string Describe() => $"requires {_modeId} mode";
-        }
-
-        private sealed class ResearchImpl : IExpansionCondition
-        {
-            private readonly string _id;
-            public ResearchImpl(string id) { _id = id; }
-            public bool IsMet(ExpansionContext ctx) => ctx.Researched.Contains(_id);
-            public string Describe() => $"requires research '{_id}'";
-        }
-
-        private sealed class CustomImpl : IExpansionCondition
-        {
-            private readonly Func<ExpansionContext, bool> _predicate;
+            private readonly Func<bool> _predicate;
             private readonly string _description;
-            public CustomImpl(Func<ExpansionContext, bool> predicate, string description) { _predicate = predicate; _description = description; }
-            public bool IsMet(ExpansionContext ctx) => _predicate(ctx);
+            public PredicateCondition(Func<bool> predicate, string description) { _predicate = predicate; _description = description; }
+            public bool IsMet() => _predicate();
             public string Describe() => _description;
         }
     }

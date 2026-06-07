@@ -1,12 +1,21 @@
 using System;
 using ExpandableX.Core;
+using Game.Core.Research;
 using JetBrains.Annotations;
+using ShapezShifter.Kit;
 using ILogger = Core.Logging.ILogger;
 
 [UsedImplicitly]
 public class ExpandableXMod : IMod
 {
     public ExpandableXMod(ILogger logger)
+    {
+        RegisterPainter();
+        RegisterCutter();
+        logger.Info.Log("ExpandableX loaded!");
+    }
+
+    private static void RegisterPainter()
     {
         // Painter: a single static layout whose three visible paint junctions are toggleable
         // {Enabled, Disabled} slots. At least one must stay enabled (an all-disabled painter is
@@ -36,8 +45,66 @@ public class ExpandableXMod : IMod
                         })),
             },
             Expansions: Array.Empty<Expansion>()));
+    }
 
-        logger.Info.Log("ExpandableX loaded!");
+    private static void RegisterCutter()
+    {
+        // Cutter family. Corrected semantics, confirmed in-game (docs/research/building-definition-ids.md):
+        //   CutterHalfInternalVariant    = half-destroyer (deletes half, 1 output)
+        //   CutterDefaultInternalVariant = 2-output cutter (splits a shape into its two halves)
+        // There is NO 4-output "quarter" cutter in the base game; a quarter cutter (and the hex 3/6
+        // cutters) would be new authored buildings with their own simulations (ADR-0011) — future work.
+        //
+        // Square sequence: half-destroyer -> 2-output cutter. Expanding the destroyer INTO the cutter
+        // requires the cutter to be researched (an existing research — this exercises research gating).
+        // Hex sequence is declared (API stays hex-ready) but Hex3/Hex6 are unbuilt, so resolving them
+        // logs a benign "not found"; it's gated off in square play anyway. The destroyer is shared.
+        var destroyer = new Layout.Static("Cutter.HalfDestroyer", NoSlotPiece("CutterHalfInternalVariant"));
+        var cutter = new Layout.Static("Cutter.TwoOutput", NoSlotPiece("CutterDefaultInternalVariant"));
+        var hex3 = new Layout.Static("Cutter.Hex3", NoSlotPiece("Hex3Cutter")); // TODO(hex): unbuilt
+        var hex6 = new Layout.Static("Cutter.Hex6", NoSlotPiece("Hex6Cutter")); // TODO(hex): unbuilt
+
+        ExpandableXRegistry.Instance.Register(new Registration(
+            RegistrationId: "Cutter",
+            Layouts: new Layout[] { destroyer, cutter, hex3, hex6 },
+            Expansions: new[]
+            {
+                Expand.Sequence(
+                    TileDirection.East,
+                    new[]
+                    {
+                        // Each step is gated on its own building's research: expanding INTO a step (or
+                        // shrinking back to it) requires that building to be unlocked — the engine checks
+                        // the target step's conditions. Both halves have a real existing research.
+                        Expand.Step(destroyer, ExpansionConditions.When(
+                            () => IsResearched("CBCutting_HalfDestroyer"), "half-destroyer research")),
+                        Expand.Step(cutter, ExpansionConditions.When(
+                            () => IsResearched("CBCutting_FullCutter"), "cutter research")),
+                    },
+                    conditions: new[] { ExpansionConditions.When(() => ShapeParts() == 4, "square shapes") }),
+
+                // TODO(hex): per-step research + skip-locked wired when Hex3/Hex6 are authored.
+                Expand.Sequence(
+                    TileDirection.East,
+                    new[] { Expand.Step(destroyer), Expand.Step(hex3), Expand.Step(hex6) },
+                    conditions: new[] { ExpansionConditions.When(() => ShapeParts() == 6, "hex shapes") }),
+            }));
+    }
+
+    private static PieceSpec NoSlotPiece(string baseDefinitionId) => new PieceSpec(
+        BaseDefinitionId: baseDefinitionId,
+        Role: PieceRole.Singleton,
+        SlotSpecs: Array.Empty<ConnectorSlotSpec>(),
+        LocalPredicates: Array.Empty<ISlotPredicate>());
+
+    /// <summary>The current scenario's shape part count (4 = square, 6 = hex); 0 when no session is active.</summary>
+    private static int ShapeParts() => GameHelper.Core?.Mode?.ShapesConfiguration?.PartCount ?? 0;
+
+    /// <summary>Whether a research upgrade is unlocked in the current session (false when no session / unknown id).</summary>
+    private static bool IsResearched(string researchUpgradeId)
+    {
+        ResearchManager research = GameHelper.Core?.Research;
+        return research != null && research.Progress.IsUnlocked(new ResearchUpgradeId(researchUpgradeId));
     }
 
     public void Dispose() { }
