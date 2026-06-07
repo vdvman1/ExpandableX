@@ -41,18 +41,18 @@ namespace ExpandableX.Core
         }
     }
 
-    // ---- Carry-over callbacks ----------------------------------------------
+    // ---- Sequence carry-over -----------------------------------------------
     //
-    // State must transfer when a drag changes the shape. The engine validates the carried result
-    // and refuses the drag if invalid, so the player can never reach an invalid state.
+    // When a static sequence swaps layouts, slot state must transfer. The engine validates the
+    // carried result and refuses the swap if invalid. (A network's grow/shrink carry is a built-in
+    // geometric translation along the grow axis — see CONTEXT.md "Expansion" Network — not a
+    // per-registration callback, so it needs no delegate here.)
 
-    public delegate ChainState CarryState(ChainState from, ChainState toAtDefaults);
-    public delegate ChainState GrowCarry(ChainState before, ChainState afterDefault);
-    public delegate ChainState ShrinkCarry(ChainState before, ChainState afterDefault, PieceState removed);
+    public delegate NetworkState CarryState(NetworkState from, NetworkState toAtDefaults);
 
     public static class CarryStateDefaults
     {
-        public static ChainState MatchById(ChainState from, ChainState toAtDefaults)
+        public static NetworkState MatchById(NetworkState from, NetworkState toAtDefaults)
         {
             var newPieces = toAtDefaults.Pieces.ToList();
             int shared = Math.Min(newPieces.Count, from.Pieces.Count);
@@ -89,13 +89,16 @@ namespace ExpandableX.Core
             IReadOnlyList<IExpansionCondition> Conditions,
             CarryState? Carry = null) : Expansion(Conditions);
 
-        /// <summary>Unbounded chain along one of several allowed axes (AND gate).</summary>
-        public sealed record Chain(
-            IReadOnlyCollection<TileDirection> Directions,
+        /// <summary>
+        /// Unbounded multi-piece growth of a <see cref="Layout.Dynamic"/> into one connected network
+        /// (the AND gate). Grow/shrink is directed from a face; which faces may grow is gated by the
+        /// layout's <see cref="Layout.Dynamic.ShapeLimit"/>, and the result by its
+        /// <see cref="Layout.Dynamic.NetworkPredicates"/>. The leading gameplay connector translates
+        /// along the grow axis ("pinch and stretch"). See CONTEXT.md "Expansion" (Network).
+        /// </summary>
+        public sealed record Network(
             Layout.Dynamic Layout,
-            IReadOnlyList<IExpansionCondition> Conditions,
-            GrowCarry? Grow = null,
-            ShrinkCarry? Shrink = null) : Expansion(Conditions);
+            IReadOnlyList<IExpansionCondition> Conditions) : Expansion(Conditions);
     }
 
     public static class Expand
@@ -109,8 +112,8 @@ namespace ExpandableX.Core
             IReadOnlyList<IExpansionCondition>? conditions = null, CarryState? carry = null) =>
             new Expansion.Sequence(direction, steps, conditions ?? None, carry);
 
-        public static Expansion Chain(IReadOnlyCollection<TileDirection> directions, Layout.Dynamic layout,
-            IReadOnlyList<IExpansionCondition>? conditions = null, GrowCarry? grow = null, ShrinkCarry? shrink = null) =>
-            new Expansion.Chain(directions, layout, conditions ?? None, grow, shrink);
+        public static Expansion Network(Layout.Dynamic layout,
+            IReadOnlyList<IExpansionCondition>? conditions = null) =>
+            new Expansion.Network(layout, conditions ?? None);
     }
 }

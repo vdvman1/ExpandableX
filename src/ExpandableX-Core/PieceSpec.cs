@@ -2,8 +2,13 @@ using System.Collections.Generic;
 
 namespace ExpandableX.Core
 {
-    /// <summary>The role a generated piece plays. See CONTEXT.md "Piece role".</summary>
-    public enum PieceRole { Singleton, Head, Body, Tail }
+    /// <summary>
+    /// The kind of piece a spec describes. See CONTEXT.md "Piece role". A <see cref="Static"/>
+    /// layout's lone piece is a <see cref="Singleton"/>; a network-model <see cref="Layout.Dynamic"/>
+    /// piece is a <see cref="NetworkPiece"/> (the join-face set distinguishes its variants — there is
+    /// no head/body/tail).
+    /// </summary>
+    public enum PieceRole { Singleton, NetworkPiece }
 
     /// <summary>
     /// One generated piece of a layout: its configurable base, its connector slots, the local

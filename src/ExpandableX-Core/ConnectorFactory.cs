@@ -17,6 +17,14 @@ namespace ExpandableX.Core
         /// </summary>
         public static IBuildingIO? Build(SlotRole role, IBuildingIO template)
         {
+            // A join face replaces the gameplay connector with a dedicated JoinJunction at the same
+            // pivot (ADR-0012): join geometry is the face itself, so we reuse the template's
+            // outward-facing pivot rather than its medium/type. Topology-driven, not a gameplay role.
+            if (role == SlotRole.Join)
+            {
+                return MakeJoin(template);
+            }
+
             SlotRole effective = Normalize(role, template);
             if (effective == SlotRole.Disabled)
             {
@@ -91,6 +99,22 @@ namespace ExpandableX.Core
                     "no known directional pairing. Only built-in item (incl. belt port), fluid, and signal " +
                     "directional connectors are supported. Extend ConnectorFactory.Flip to add more."),
             };
+        }
+
+        /// <summary>
+        /// A <see cref="JoinJunction"/> at the template connector's pivot. The join faces outward (the
+        /// same direction the gameplay connector at this face does), so its counterpart lands on the
+        /// neighbour piece sharing the face — which is how the network stitches pieces together.
+        /// </summary>
+        private static IBuildingIO MakeJoin(IBuildingIO template)
+        {
+            if (template is not BuildingBaseIO geometry)
+            {
+                throw new System.NotSupportedException(
+                    $"Cannot place a join connector from '{template.GetType().Name}': not a BuildingBaseIO.");
+            }
+
+            return new JoinJunction { Position_L = geometry.Position_L, TileDirection = geometry.TileDirection };
         }
 
         private static BuildingItemIO CopyItem(BuildingItemIO target, BuildingItemIO source)
