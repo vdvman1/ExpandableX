@@ -9,6 +9,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExpandableX-Core", "src\Exp
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExpandableX", "src\ExpandableX\ExpandableX.csproj", "{C56B8B29-4EAF-4046-84CE-B6A7FEA76A4C}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExpandableX-Core.Tests", "tests\ExpandableX-Core.Tests\ExpandableX-Core.Tests.csproj", "{EEE48BB5-EEEE-435E-A807-E63A109A5176}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -43,6 +47,18 @@ Global
 		{C56B8B29-4EAF-4046-84CE-B6A7FEA76A4C}.Release|x64.Build.0 = Release|Any CPU
 		{C56B8B29-4EAF-4046-84CE-B6A7FEA76A4C}.Release|x86.ActiveCfg = Release|Any CPU
 		{C56B8B29-4EAF-4046-84CE-B6A7FEA76A4C}.Release|x86.Build.0 = Release|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Debug|x64.Build.0 = Debug|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Debug|x86.Build.0 = Debug|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Release|x64.ActiveCfg = Release|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Release|x64.Build.0 = Release|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Release|x86.ActiveCfg = Release|Any CPU
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -50,5 +66,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{25939293-4DEB-4803-B022-CDC26F03231C} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{C56B8B29-4EAF-4046-84CE-B6A7FEA76A4C} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{EEE48BB5-EEEE-435E-A807-E63A109A5176} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

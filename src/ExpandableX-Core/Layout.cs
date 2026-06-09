@@ -19,13 +19,17 @@ namespace ExpandableX.Core
         /// <see cref="PieceSpec"/> generates the whole family (one variant per join-face set ×
         /// slot-role combination); the building grows/shrinks as a connected network.
         /// <see cref="ShapeLimit"/> constrains which shapes are reachable; <see cref="NetworkPredicates"/>
-        /// are the building-wide validity rules. See CONTEXT.md "DynamicLayout" and ADR-0012.
+        /// are the building-wide validity rules. <see cref="SimulationFactory"/> builds the one runtime
+        /// simulation per connected network of this family's pieces (author-supplied per ADR-0011;
+        /// optional so the matcher ships before its first consumer — a layout without one is simply
+        /// not networked). See CONTEXT.md "DynamicLayout" and ADR-0012.
         /// </summary>
         public sealed record Dynamic(
             string LayoutId,
             PieceSpec Piece,
             IShapeLimit ShapeLimit,
-            IReadOnlyList<INetworkPredicate> NetworkPredicates) : Layout(LayoutId);
+            IReadOnlyList<INetworkPredicate> NetworkPredicates,
+            IJoinNetworkSimulationFactory? SimulationFactory = null) : Layout(LayoutId);
     }
 
     public static class LayoutExtensions

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>ExpandableX.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <!-- The connected-components core is deliberately game-free (ADR-0012), so we link-compile the
+       single source file rather than referencing ExpandableX-Core (which pulls in the game DLLs).
+       That keeps these tests pure logic with no Unity/runtime dependency. -->
+  <ItemGroup>
+    <Compile Include="..\..\src\ExpandableX-Core\JoinNetworkGraph.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

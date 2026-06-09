@@ -37,6 +37,39 @@ namespace ExpandableX.Core
             {
                 ProcessRegistration(registration, simulationSystems, dependencies);
             }
+
+            AttachJoinNetworkSystem(simulationSystems, dependencies);
+        }
+
+        /// <summary>
+        /// Add the shared network-model matcher (<see cref="JoinNetworkSystem"/>) when at least one
+        /// registered <see cref="Layout.Dynamic"/> supplies a simulation factory. Keyed per family by
+        /// layout id, so the one system handles every network-model family; with no factories
+        /// registered nothing is added and no buildings carry a <c>JoinJunction</c> at runtime.
+        /// </summary>
+        private void AttachJoinNetworkSystem(
+            ICollection<ISimulationSystem> simulationSystems,
+            SimulationSystemsDependencies dependencies)
+        {
+            var factories = new Dictionary<string, IJoinNetworkSimulationFactory>();
+            foreach (Registration registration in _registry.Registrations.Values)
+            {
+                foreach (Layout layout in registration.Layouts)
+                {
+                    if (layout is Layout.Dynamic dynamic && dynamic.SimulationFactory is { } factory)
+                    {
+                        factories[dynamic.LayoutId] = factory;
+                    }
+                }
+            }
+
+            if (factories.Count == 0)
+            {
+                return;
+            }
+
+            simulationSystems.Add(new JoinNetworkSystem(_registry, factories, dependencies.Logger));
+            _logger.Info.Log($"ExpandableX-Core: attached JoinNetworkSystem for {factories.Count} network-model family(ies)");
         }
 
         private void ProcessRegistration(
