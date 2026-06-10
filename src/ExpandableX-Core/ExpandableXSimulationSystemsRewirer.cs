@@ -114,14 +114,14 @@ namespace ExpandableX.Core
             {
                 // Base definition ids are asset-assigned; if one is wrong, the one-time discovery dump
                 // below lists every real id so the consumer can correct its registration.
-                _logger.Info.Log($"ExpandableX-Core: base definition '{piece.BaseDefinitionId}' not found for {piece.Role} piece in family '{registration.RegistrationId}' — skipping piece");
+                _logger.Info.Log($"ExpandableX-Core: base definition '{piece.BaseDefinitionId}' not found for a piece in family '{registration.RegistrationId}' — skipping piece");
                 LogAvailableDefinitionsOnce(dependencies);
                 return 0;
             }
 
             var resolver = new ConnectorDataResolver(baseDef.ConnectorData);
             PieceExpansion expansion = VariantEncoder.ExplodePiece(piece, resolver);
-            _logger.Info.Log($"ExpandableX-Core:   {piece.Role} '{baseDef.Id.Name}': {expansion.Variants.Count} variant(s), {expansion.Pruned.Count} pruned");
+            _logger.Info.Log($"ExpandableX-Core:   {(layout is Layout.Dynamic ? "dynamic" : "static")} piece '{baseDef.Id.Name}': {expansion.Variants.Count} variant(s), {expansion.Pruned.Count} pruned");
 
             // For a network-model (DynamicLayout) piece, generate one definition per rotational class
             // of join-face set and realise the others via GridRotation (ADR-0012); static layouts keep

@@ -1,7 +1,9 @@
 using System;
+using ExpandableX;
 using ExpandableX.Core;
 using Game.Core.Research;
 using JetBrains.Annotations;
+using ShapezShifter.Hijack;
 using ShapezShifter.Kit;
 using ILogger = Core.Logging.ILogger;
 
@@ -12,6 +14,12 @@ public class ExpandableXMod : IMod
     {
         RegisterPainter();
         RegisterCutter();
+
+        // Network-model AND gate: author its configurable base (reusing the AND visual) before the
+        // Core variant-generation rewirer runs, then register the dynamic layout that references it.
+        GameRewirers.AddRewirer<IBuildingsRewirer>(new AndGateNetworkBaseRewirer(logger));
+        RegisterAndGate();
+
         logger.Info.Log("ExpandableX loaded!");
     }
 
@@ -31,7 +39,6 @@ public class ExpandableXMod : IMod
                         // (confirmed in-game). The group also contains a mirrored definition
                         // (PainterDefaultInternalVariantMirrored) which would be its own registration.
                         BaseDefinitionId: "PainterDefaultInternalVariant",
-                        Role: PieceRole.Singleton,
                         SlotSpecs: new ConnectorSlotSpec[]
                         {
                             ConnectorSlotSpec.Range.Of<BuildingFluidJunction>(
@@ -91,9 +98,39 @@ public class ExpandableXMod : IMod
             }));
     }
 
+    private static void RegisterAndGate()
+    {
+        // Network-model AND gate (ADR-0012). Declare ONE gameplay piece — 3 signal inputs (N/S/W) + 1
+        // output (E), reusing the AND visual via AndGateNetworkBaseRewirer, with the player-facing
+        // I/O/Disabled roles per face. The framework adds Join as an allowed role on each face; the
+        // singleton (0-join variants) and network pieces (>=1-join variants) are emergent from the
+        // generated variant's join count, so the join rules aren't authored here.
+        // TODO(#28 override): map the singleton 2-input-AND combo (output E, inputs N+S, W disabled) to
+        // "LogicGateAndInternalVariant" once override resolution is canonicalisation-aware.
+        var gameplayRoles = new[] { SlotRole.Input, SlotRole.Output, SlotRole.Disabled };
+        var piece = new PieceSpec(
+            BaseDefinitionId: AndGateNetworkBaseRewirer.BaseDefinitionId,
+            SlotSpecs: new ConnectorSlotSpec[]
+            {
+                ConnectorSlotSpec.Range.Of<BuildingSignalInput>("in", gameplayRoles, SlotRole.Input),
+                ConnectorSlotSpec.Range.Of<BuildingSignalOutput>("out", gameplayRoles, SlotRole.Output),
+            },
+            LocalPredicates: Array.Empty<ISlotPredicate>());
+
+        var layout = new Layout.Dynamic(
+            LayoutId: "AndGate.Network",
+            Piece: piece,
+            ShapeLimit: ShapeLimits.Free,
+            NetworkPredicates: new[] { NetworkPredicates.AtLeastOne(new[] { SlotRole.Output }) });
+
+        ExpandableXRegistry.Instance.Register(new Registration(
+            RegistrationId: "AndGate",
+            Layouts: new Layout[] { layout },
+            Expansions: new[] { Expand.Network(layout) }));
+    }
+
     private static PieceSpec NoSlotPiece(string baseDefinitionId) => new PieceSpec(
         BaseDefinitionId: baseDefinitionId,
-        Role: PieceRole.Singleton,
         SlotSpecs: Array.Empty<ConnectorSlotSpec>(),
         LocalPredicates: Array.Empty<ISlotPredicate>());
 

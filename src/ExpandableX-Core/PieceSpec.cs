@@ -3,16 +3,10 @@ using System.Collections.Generic;
 namespace ExpandableX.Core
 {
     /// <summary>
-    /// The kind of piece a spec describes. See CONTEXT.md "Piece role". A <see cref="Static"/>
-    /// layout's lone piece is a <see cref="Singleton"/>; a network-model <see cref="Layout.Dynamic"/>
-    /// piece is a <see cref="NetworkPiece"/> (the join-face set distinguishes its variants — there is
-    /// no head/body/tail).
-    /// </summary>
-    public enum PieceRole { Singleton, NetworkPiece }
-
-    /// <summary>
     /// One generated piece of a layout: its configurable base, its connector slots, the local
-    /// rules pruning impossible combinations, and any per-variant overrides.
+    /// rules pruning impossible combinations, and any per-variant overrides. (A piece has no fixed
+    /// "kind" — for a <see cref="Layout.Dynamic"/> a single declared piece yields both the singleton
+    /// and network variants, distinguished per-variant by join count; see CONTEXT.md "Piece role".)
     /// </summary>
     /// <param name="BaseDefinitionId">
     /// The configurable base — the connector-superset definition the slots are declared against
@@ -24,7 +18,6 @@ namespace ExpandableX.Core
     /// </param>
     public sealed record PieceSpec(
         string BaseDefinitionId,
-        PieceRole Role,
         IReadOnlyList<ConnectorSlotSpec> SlotSpecs,
         IReadOnlyList<ISlotPredicate> LocalPredicates,
         IReadOnlyDictionary<string, string>? VariantOverrides = null)
