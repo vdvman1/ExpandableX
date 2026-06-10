@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Game.Core.Coordinates;
 
 namespace ExpandableX.Core
 {
@@ -13,13 +14,21 @@ namespace ExpandableX.Core
     /// target). Its keys are exactly the *valid* combinations — pruned ones were never generated, so
     /// membership doubles as the validity check for a candidate slot change.
     /// </param>
+    /// <param name="SlotFaceDirections">
+    /// For a network-model (<see cref="Layout.Dynamic"/>) piece, each slot id → the planar face its
+    /// connector sits on. Only the canonical orientation of each join-face set is generated (see
+    /// <see cref="RotationCanonicalizer"/>), so the runtime needs these directions to map a placed
+    /// building's world state to its (canonical def, <c>GridRotation</c>) pair and back. Null for a
+    /// static layout (no rotational canonicalisation).
+    /// </param>
     public sealed record PieceVariantSet(
         Registration Registration,
         Layout Layout,
         PieceSpec Piece,
         string BaseDefinitionId,
         IReadOnlyList<ConnectorSlot> Slots,
-        IReadOnlyDictionary<string, string> DefIdByComboKey);
+        IReadOnlyDictionary<string, string> DefIdByComboKey,
+        IReadOnlyDictionary<string, TileDirection>? SlotFaceDirections = null);
 
     /// <summary>
     /// What a single placed definition id decodes to: the piece's variant set and the slot-role

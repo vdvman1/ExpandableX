@@ -1,6 +1,7 @@
 using ShapezShifter.Hijack;
 using System.Collections.Generic;
 using System.Linq;
+using Game.Core.Coordinates;
 using ILogger = Core.Logging.ILogger;
 
 namespace ExpandableX.Core
@@ -122,13 +123,20 @@ namespace ExpandableX.Core
             PieceExpansion expansion = VariantEncoder.ExplodePiece(piece, resolver);
             _logger.Info.Log($"ExpandableX-Core:   {piece.Role} '{baseDef.Id.Name}': {expansion.Variants.Count} variant(s), {expansion.Pruned.Count} pruned");
 
+            // For a network-model (DynamicLayout) piece, generate one definition per rotational class
+            // of join-face set and realise the others via GridRotation (ADR-0012); static layouts keep
+            // every variant. slotFaces records each slot's planar face so the runtime can map a placed
+            // building's world state to its (canonical def, rotation) pair.
+            (IReadOnlyList<Variant> variants, IReadOnlyDictionary<string, TileDirection>? slotFaces) =
+                CanonicalizeIfDynamic(layout, expansion, resolver);
+
             // First pass: resolve each combination to a definition id (synthesising new defs as
             // needed) and build the per-piece combo → def-id table.
-            var defIdByComboKey = new Dictionary<string, string>(expansion.Variants.Count);
-            var placements = new List<(string DefIdName, IReadOnlyDictionary<string, SlotRole> State)>(expansion.Variants.Count);
+            var defIdByComboKey = new Dictionary<string, string>(variants.Count);
+            var placements = new List<(string DefIdName, IReadOnlyDictionary<string, SlotRole> State)>(variants.Count);
             int synthesised = 0;
 
-            foreach (Variant variant in expansion.Variants)
+            foreach (Variant variant in variants)
             {
                 string comboKey = VariantEncoder.ComboKey(expansion.ExpandedSlots, variant.SlotState);
                 string defIdName = ResolveOrSynthesise(
@@ -139,7 +147,7 @@ namespace ExpandableX.Core
             }
 
             // Second pass: register each placement against the shared, complete table.
-            var set = new PieceVariantSet(registration, layout, piece, baseDef.Id.Name, expansion.ExpandedSlots, defIdByComboKey);
+            var set = new PieceVariantSet(registration, layout, piece, baseDef.Id.Name, expansion.ExpandedSlots, defIdByComboKey, slotFaces);
             foreach ((string defIdName, IReadOnlyDictionary<string, SlotRole> state) in placements)
             {
                 _registry.RecordVariant(defIdName, new VariantPlacement(set, state));
@@ -298,6 +306,73 @@ namespace ExpandableX.Core
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// For a <see cref="Layout.Dynamic"/> piece, keep only the canonical orientation of each
+        /// rotational class of join-face set (the others are realised at runtime via GridRotation —
+        /// ADR-0012), and return the slot → planar-face map. Static layouts (and dynamic pieces that
+        /// aren't a clean planar four-face shape) keep every variant and canonicalise nothing.
+        /// </summary>
+        private (IReadOnlyList<Variant> Variants, IReadOnlyDictionary<string, TileDirection>? SlotFaces) CanonicalizeIfDynamic(
+            Layout layout, PieceExpansion expansion, ConnectorDataResolver resolver)
+        {
+            if (layout is not Layout.Dynamic)
+            {
+                return (expansion.Variants, null);
+            }
+
+            var slotFaces = new Dictionary<string, TileDirection>(expansion.ExpandedSlots.Count);
+            foreach (ConnectorSlot slot in expansion.ExpandedSlots)
+            {
+                if (resolver.ResolveVisible(slot.Connector) is BuildingBaseIO geometry)
+                {
+                    slotFaces[slot.Id] = geometry.TileDirection;
+                }
+            }
+
+            // v1 canonicalisation handles a piece whose slots are exactly the four planar faces, one
+            // each (RotationCanonicalizer's scope). Anything else (Up/Down faces, partial sets) skips
+            // canonicalisation and generates every variant — safe, just less compact.
+            if (!IsPlanarFourFace(expansion.ExpandedSlots, slotFaces))
+            {
+                _logger.Info.Log($"ExpandableX-Core:   dynamic piece '{expansion.Spec.BaseDefinitionId}' is not a planar four-face shape; generating all variants (no rotational canonicalisation)");
+                return (expansion.Variants, slotFaces);
+            }
+
+            var canonical = expansion.Variants
+                .Where(v => RotationCanonicalizer.IsCanonical(FaceMap(v.SlotState, slotFaces)))
+                .ToList();
+            _logger.Info.Log($"ExpandableX-Core:   dynamic piece: {canonical.Count} canonical variant(s) of {expansion.Variants.Count} (one per rotational class)");
+            return (canonical, slotFaces);
+        }
+
+        /// <summary>Project a slot-role combination onto its faces (slot id → face direction → role).</summary>
+        private static IReadOnlyDictionary<TileDirection, SlotRole> FaceMap(
+            IReadOnlyDictionary<string, SlotRole> state, IReadOnlyDictionary<string, TileDirection> slotFaces)
+        {
+            var map = new Dictionary<TileDirection, SlotRole>(slotFaces.Count);
+            foreach (KeyValuePair<string, TileDirection> slotFace in slotFaces)
+            {
+                map[slotFace.Value] = state[slotFace.Key];
+            }
+
+            return map;
+        }
+
+        /// <summary>True when the slots are exactly the four planar faces (East/South/West/North), one slot each.</summary>
+        private static bool IsPlanarFourFace(
+            IReadOnlyList<ConnectorSlot> slots, IReadOnlyDictionary<string, TileDirection> slotFaces)
+        {
+            if (slots.Count != 4 || slotFaces.Count != 4)
+            {
+                return false;
+            }
+
+            var faces = new HashSet<TileDirection>(slotFaces.Values);
+            return faces.Count == 4
+                && faces.Contains(TileDirection.East) && faces.Contains(TileDirection.South)
+                && faces.Contains(TileDirection.West) && faces.Contains(TileDirection.North);
         }
 
         private void AttachPainterSimulation(
