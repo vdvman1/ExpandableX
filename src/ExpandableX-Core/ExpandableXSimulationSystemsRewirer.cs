@@ -1,7 +1,6 @@
 using ShapezShifter.Hijack;
 using System.Collections.Generic;
 using System.Linq;
-using Game.Core.Coordinates;
 using ILogger = Core.Logging.ILogger;
 
 namespace ExpandableX.Core
@@ -120,18 +119,42 @@ namespace ExpandableX.Core
             }
 
             var resolver = new ConnectorDataResolver(baseDef.ConnectorData);
-            PieceExpansion expansion = VariantEncoder.ExplodePiece(piece, resolver);
-            _logger.Info.Log($"ExpandableX-Core:   {(layout is Layout.Dynamic ? "dynamic" : "static")} piece '{baseDef.Id.Name}': {expansion.Variants.Count} variant(s), {expansion.Pruned.Count} pruned");
 
-            // For a network-model (DynamicLayout) piece, generate one definition per rotational class
-            // of join-face set and realise the others via GridRotation (ADR-0012); static layouts keep
-            // every variant. slotFaces records each slot's planar face so the runtime can map a placed
-            // building's world state to its (canonical def, rotation) pair.
-            (IReadOnlyList<Variant> variants, IReadOnlyDictionary<string, TileDirection>? slotFaces) =
-                CanonicalizeIfDynamic(layout, expansion, resolver);
+            // Expand slots once and, for a network-model (DynamicLayout) piece, resolve each slot's
+            // planar face. We canonicalise (one definition per rotational class of join-face set, the
+            // rest realised via GridRotation — ADR-0012) only when the piece is a clean planar
+            // four-face shape; otherwise every variant is generated as-is.
+            var slots = piece.SlotSpecs.SelectMany(s => s.Expand(resolver)).ToList();
+            IReadOnlyDictionary<string, TileDirection>? slotFaces =
+                layout is Layout.Dynamic ? ResolveSlotFaces(slots, resolver) : null;
+            bool canonicalize = slotFaces != null && IsPlanarFourFace(slots, slotFaces);
 
-            // First pass: resolve each combination to a definition id (synthesising new defs as
-            // needed) and build the per-piece combo → def-id table.
+            // Re-key the overrides onto the canonical orientation of each one's rotation class before
+            // exploding, so an override the author declared on any orientation lands on whichever
+            // orientation is actually generated.
+            PieceSpec effectivePiece = canonicalize && piece.VariantOverrides != null
+                ? piece with { VariantOverrides = CanonicalizeOverrideKeys(piece.Overrides, slots, slotFaces!) }
+                : piece;
+
+            PieceExpansion expansion = VariantEncoder.ExplodePiece(effectivePiece, resolver);
+
+            // Canonicalise only the network (>=1-join) variants: their rotation is framework-managed by
+            // grow/shrink, so one def per rotational class is right. Singleton (0-join) variants are
+            // placed and rotated by the player, so each local config is its own def (no rotation reuse) —
+            // exactly like a static slot config; canonicalising them would hijack the player's rotation
+            // and break the slot UI.
+            IReadOnlyList<Variant> variants = canonicalize
+                ? expansion.Variants
+                    .Where(v => !HasJoin(v.SlotState) || RotationCanonicalizer.IsCanonical(FaceMap(v.SlotState, slotFaces!)))
+                    .ToList()
+                : expansion.Variants;
+
+            string kind = layout is Layout.Dynamic ? "dynamic" : "static";
+            _logger.Info.Log(canonicalize
+                ? $"ExpandableX-Core:   {kind} piece '{baseDef.Id.Name}': {variants.Count} kept of {expansion.Variants.Count} (singletons in full, network pieces canonicalised; {expansion.Pruned.Count} pruned)"
+                : $"ExpandableX-Core:   {kind} piece '{baseDef.Id.Name}': {expansion.Variants.Count} variant(s), {expansion.Pruned.Count} pruned");
+
+            // First pass: resolve each combination to a definition id (synthesising new defs as needed).
             var defIdByComboKey = new Dictionary<string, string>(variants.Count);
             var placements = new List<(string DefIdName, IReadOnlyDictionary<string, SlotRole> State)>(variants.Count);
             int synthesised = 0;
@@ -140,14 +163,14 @@ namespace ExpandableX.Core
             {
                 string comboKey = VariantEncoder.ComboKey(expansion.ExpandedSlots, variant.SlotState);
                 string defIdName = ResolveOrSynthesise(
-                    variant, baseDef, piece, expansion, resolver, hiddenGroups, simulationSystems, dependencies, ref synthesised);
+                    variant, baseDef, effectivePiece, expansion, resolver, hiddenGroups, simulationSystems, dependencies, ref synthesised);
 
                 defIdByComboKey[comboKey] = defIdName;
                 placements.Add((defIdName, variant.SlotState));
             }
 
             // Second pass: register each placement against the shared, complete table.
-            var set = new PieceVariantSet(registration, layout, piece, baseDef.Id.Name, expansion.ExpandedSlots, defIdByComboKey, slotFaces);
+            var set = new PieceVariantSet(registration, layout, effectivePiece, baseDef.Id.Name, expansion.ExpandedSlots, defIdByComboKey, slotFaces);
             foreach ((string defIdName, IReadOnlyDictionary<string, SlotRole> state) in placements)
             {
                 _registry.RecordVariant(defIdName, new VariantPlacement(set, state));
@@ -308,43 +331,80 @@ namespace ExpandableX.Core
             return true;
         }
 
-        /// <summary>
-        /// For a <see cref="Layout.Dynamic"/> piece, keep only the canonical orientation of each
-        /// rotational class of join-face set (the others are realised at runtime via GridRotation —
-        /// ADR-0012), and return the slot → planar-face map. Static layouts (and dynamic pieces that
-        /// aren't a clean planar four-face shape) keep every variant and canonicalise nothing.
-        /// </summary>
-        private (IReadOnlyList<Variant> Variants, IReadOnlyDictionary<string, TileDirection>? SlotFaces) CanonicalizeIfDynamic(
-            Layout layout, PieceExpansion expansion, ConnectorDataResolver resolver)
+        /// <summary>Resolve each slot's planar face from its base connector (slot id → face direction).</summary>
+        private static IReadOnlyDictionary<string, TileDirection> ResolveSlotFaces(
+            IReadOnlyList<ConnectorSlot> slots, ConnectorDataResolver resolver)
         {
-            if (layout is not Layout.Dynamic)
-            {
-                return (expansion.Variants, null);
-            }
-
-            var slotFaces = new Dictionary<string, TileDirection>(expansion.ExpandedSlots.Count);
-            foreach (ConnectorSlot slot in expansion.ExpandedSlots)
+            var faces = new Dictionary<string, TileDirection>(slots.Count);
+            foreach (ConnectorSlot slot in slots)
             {
                 if (resolver.ResolveVisible(slot.Connector) is BuildingBaseIO geometry)
                 {
-                    slotFaces[slot.Id] = geometry.TileDirection;
+                    faces[slot.Id] = geometry.TileDirection;
                 }
             }
 
-            // v1 canonicalisation handles a piece whose slots are exactly the four planar faces, one
-            // each (RotationCanonicalizer's scope). Anything else (Up/Down faces, partial sets) skips
-            // canonicalisation and generates every variant — safe, just less compact.
-            if (!IsPlanarFourFace(expansion.ExpandedSlots, slotFaces))
+            return faces;
+        }
+
+        /// <summary>
+        /// Re-key a piece's variant overrides onto the canonical orientation of each one's rotational
+        /// class, so an override the author declared on any orientation applies to the single
+        /// generated def for that class (ADR-0012). Only used for canonicalised (planar four-face) pieces.
+        /// </summary>
+        private static IReadOnlyDictionary<string, string> CanonicalizeOverrideKeys(
+            IReadOnlyDictionary<string, string> overrides,
+            IReadOnlyList<ConnectorSlot> slots,
+            IReadOnlyDictionary<string, TileDirection> slotFaces)
+        {
+            var result = new Dictionary<string, string>(overrides.Count);
+            foreach (KeyValuePair<string, string> entry in overrides)
             {
-                _logger.Info.Log($"ExpandableX-Core:   dynamic piece '{expansion.Spec.BaseDefinitionId}' is not a planar four-face shape; generating all variants (no rotational canonicalisation)");
-                return (expansion.Variants, slotFaces);
+                IReadOnlyDictionary<string, SlotRole> state = ParseComboKey(slots, entry.Key);
+
+                // Only network (>=1-join) variants are canonicalised, so only their override keys need
+                // re-keying onto the canonical orientation. A 0-join (singleton) override stays exactly
+                // as declared — those variants are generated in full, un-canonicalised.
+                result[HasJoin(state) ? VariantEncoder.ComboKey(slots, CanonicalState(state, slots, slotFaces)) : entry.Key]
+                    = entry.Value;
             }
 
-            var canonical = expansion.Variants
-                .Where(v => RotationCanonicalizer.IsCanonical(FaceMap(v.SlotState, slotFaces)))
-                .ToList();
-            _logger.Info.Log($"ExpandableX-Core:   dynamic piece: {canonical.Count} canonical variant(s) of {expansion.Variants.Count} (one per rotational class)");
-            return (canonical, slotFaces);
+            return result;
+        }
+
+        private static bool HasJoin(IReadOnlyDictionary<string, SlotRole> state) => state.Values.Contains(SlotRole.Join);
+
+        /// <summary>Decode a combo key (one role char per slot, in slot order) back into a slot-role map.</summary>
+        private static IReadOnlyDictionary<string, SlotRole> ParseComboKey(IReadOnlyList<ConnectorSlot> slots, string comboKey)
+        {
+            var state = new Dictionary<string, SlotRole>(slots.Count);
+            for (int i = 0; i < slots.Count && i < comboKey.Length; i++)
+            {
+                state[slots[i].Id] = RoleAlphabet.Decode(comboKey[i]);
+            }
+
+            return state;
+        }
+
+        /// <summary>The canonical-orientation slot-role map for a state: rotate its face map to canonical, then map back to slots.</summary>
+        private static IReadOnlyDictionary<string, SlotRole> CanonicalState(
+            IReadOnlyDictionary<string, SlotRole> state,
+            IReadOnlyList<ConnectorSlot> slots,
+            IReadOnlyDictionary<string, TileDirection> slotFaces)
+        {
+            IReadOnlyDictionary<TileDirection, SlotRole> canonicalFaces =
+                RotationCanonicalizer.Canonicalize(FaceMap(state, slotFaces)).Canonical;
+
+            var canonical = new Dictionary<string, SlotRole>(slots.Count);
+            foreach (ConnectorSlot slot in slots)
+            {
+                if (slotFaces.TryGetValue(slot.Id, out TileDirection face) && canonicalFaces.TryGetValue(face, out SlotRole role))
+                {
+                    canonical[slot.Id] = role;
+                }
+            }
+
+            return canonical;
         }
 
         /// <summary>Project a slot-role combination onto its faces (slot id → face direction → role).</summary>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using ExpandableX;
 using ExpandableX.Core;
 using Game.Core.Research;
@@ -105,8 +106,11 @@ public class ExpandableXMod : IMod
         // I/O/Disabled roles per face. The framework adds Join as an allowed role on each face; the
         // singleton (0-join variants) and network pieces (>=1-join variants) are emergent from the
         // generated variant's join count, so the join rules aren't authored here.
-        // TODO(#28 override): map the singleton 2-input-AND combo (output E, inputs N+S, W disabled) to
-        // "LogicGateAndInternalVariant" once override resolution is canonicalisation-aware.
+        // Override: the standalone 2-input-AND config reuses the base-game AND definition instead of a
+        // synthesised one. Slot order is in_0=N, in_1=S, in_2=W, out_0=E (the connector authoring order
+        // in AndGateNetworkBaseRewirer), so the 2-input AND — inputs N+S, W disabled, output E — is the
+        // combo "IIDO". The framework canonicalises this key to whichever orientation it generates, so
+        // it lands correctly despite rotational canonicalisation.
         var gameplayRoles = new[] { SlotRole.Input, SlotRole.Output, SlotRole.Disabled };
         var piece = new PieceSpec(
             BaseDefinitionId: AndGateNetworkBaseRewirer.BaseDefinitionId,
@@ -115,7 +119,8 @@ public class ExpandableXMod : IMod
                 ConnectorSlotSpec.Range.Of<BuildingSignalInput>("in", gameplayRoles, SlotRole.Input),
                 ConnectorSlotSpec.Range.Of<BuildingSignalOutput>("out", gameplayRoles, SlotRole.Output),
             },
-            LocalPredicates: Array.Empty<ISlotPredicate>());
+            LocalPredicates: Array.Empty<ISlotPredicate>(),
+            VariantOverrides: new Dictionary<string, string> { ["IIDO"] = "LogicGateAndInternalVariant" });
 
         var layout = new Layout.Dynamic(
             LayoutId: "AndGate.Network",

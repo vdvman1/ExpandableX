@@ -55,6 +55,13 @@ namespace ExpandableX.Core
 
                 foreach (SlotRole role in slot.AllowedRoles)
                 {
+                    // Join is topology-driven (the grow/shrink action sets it), never a player choice —
+                    // don't offer it as a slot-config button. (Per-face grow/shrink handles joins; #27.)
+                    if (role == SlotRole.Join)
+                    {
+                        continue;
+                    }
+
                     string comboKey = VariantEncoder.ComboKey(set.Slots, WithRole(placement.SlotState, slot.Id, role));
                     // Reachable iff its combination exists in the table (pruned combos are absent).
                     bool reachable = set.DefIdByComboKey.TryGetValue(comboKey, out string targetDef);
