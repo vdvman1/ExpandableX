@@ -55,11 +55,16 @@ namespace ExpandableX
             // Aligned to the base-game AND gate (confirmed in-game: output East, inputs North + South)
             // with a third input added on the free West face — a 3-input AND. Variant generation flips
             // roles per slot and turns any face into a join, so this is just the native starting point.
+            //
+            // IOType MUST be Building (not the WireConnectorConfig default of Wire): the in-world mesh
+            // builder picks the connector's outer end-cap from BuildingSignalIOType — Building draws the
+            // flush building socket that logic gates use, Wire draws a free-standing stand with no socket.
+            // ConnectorFactory.Flip forwards IOType, so setting it here fixes every synthesised variant.
             IBuildingConnectorData connectors = BuildingConnectors.SingleTile()
-                .AddWireOutput(WireConnectorConfig.CustomOutput(TileDirection.East))
-                .AddWireInput(WireConnectorConfig.CustomInput(TileDirection.North))
-                .AddWireInput(WireConnectorConfig.CustomInput(TileDirection.South))
-                .AddWireInput(WireConnectorConfig.CustomInput(TileDirection.West))
+                .AddWireOutput(WireConnectorConfig.CustomOutput(TileDirection.East, BuildingSignalIOType.Building))
+                .AddWireInput(WireConnectorConfig.CustomInput(TileDirection.North, BuildingSignalIOType.Building))
+                .AddWireInput(WireConnectorConfig.CustomInput(TileDirection.South, BuildingSignalIOType.Building))
+                .AddWireInput(WireConnectorConfig.CustomInput(TileDirection.West, BuildingSignalIOType.Building))
                 .Build();
 
 #pragma warning disable CS0618
