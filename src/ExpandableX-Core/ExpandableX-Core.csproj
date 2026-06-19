@@ -22,6 +22,11 @@
     <Reference Include="MonoMod.RuntimeDetour">
       <HintPath>$(SPZ2_PATH)\..\..\..\..\workshop\content\2162800\3542712030\MonoMod.RuntimeDetour.dll</HintPath>
       <Private>False</Private>
+      <!-- MonoMod.RuntimeDetour ships its own copies of the nullable-annotation attributes
+           (NotNullWhen, etc.) that also live in netstandard, so its types are aliased out of the
+           global namespace to avoid CS0433 ambiguity. Reach it via `extern alias monomod` (only
+           ExpandableXCoreMod needs it). -->
+      <Aliases>monomod</Aliases>
     </Reference>
 
     <Reference Include="SPZGameAssembly">

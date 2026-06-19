@@ -48,9 +48,17 @@ namespace ExpandableX.Core
             PieceVariantSet set = placement.Set;
             foreach (ConnectorSlot slot in set.Slots)
             {
+                SlotRole currentRole = placement.SlotState[slot.Id];
+
+                // A join face is topology, owned by grow/shrink — never a configurable slot. Switching it
+                // to a gameplay role would sever the join and break the network, so omit the slot entirely.
+                if (currentRole == SlotRole.Join)
+                {
+                    continue;
+                }
+
                 yield return new HUDSidePanelModuleInfoText.Data(new RawText(slot.Id));
 
-                SlotRole currentRole = placement.SlotState[slot.Id];
                 var buttons = new List<PlacementKeybindingHintData>(slot.AllowedRoles.Count);
 
                 foreach (SlotRole role in slot.AllowedRoles)
@@ -62,9 +70,12 @@ namespace ExpandableX.Core
                         continue;
                     }
 
-                    string comboKey = VariantEncoder.ComboKey(set.Slots, WithRole(placement.SlotState, slot.Id, role));
-                    // Reachable iff its combination exists in the table (pruned combos are absent).
-                    bool reachable = set.DefIdByComboKey.TryGetValue(comboKey, out string targetDef);
+                    // Resolve the swap target. For a network (canonicalised) piece a literal combo lookup
+                    // misses — variants are stored one-per-rotational-class — so resolve via the world-face
+                    // realisation, which also yields the rotation to place at. Reachable iff the family
+                    // actually generates that combination (pruned/invalid combos resolve to nothing).
+                    bool reachable = TryResolveSlotChange(
+                        set, placement, building, slot, role, out string targetDef, out GridRotation targetRotation);
                     bool isCurrent = role == currentRole;
                     // A role is selectable only if it's reachable and not already current; otherwise the
                     // button is shown but disabled (ActiveIf=false) so the player sees the option exists.
@@ -82,7 +93,7 @@ namespace ExpandableX.Core
                         {
                             if (selectable)
                             {
-                                SwapTo(map, building, currentDefName, targetDef);
+                                SwapTo(map, building, currentDefName, targetDef, targetRotation);
                             }
                         },
                     });
@@ -114,13 +125,73 @@ namespace ExpandableX.Core
                         {
                             if (enabled && targetDef != null)
                             {
-                                SwapTo(map, building, currentDefName, targetDef);
+                                // A sequence swaps to a different building def at the same orientation.
+                                SwapTo(map, building, currentDefName, targetDef, building.Transform.Rotation);
                             }
                         },
                     });
                 }
 
                 yield return new HUDSidePanelModuleActionButtons.Data(expandButtons);
+            }
+
+            // Network-model grow/shrink (the AND gate): a grow button per growable face plus a shrink
+            // button on a removable end piece, driven by NetworkExpansionEngine. Each option carries a
+            // ready-to-run undoable action; clicking just schedules it (like SwapTo). These per-face
+            // buttons are the stepping stone to drag handles (ADR-0002). Needs the session managers, so
+            // skip the section until they're captured.
+            Player executor = _registry.LocalPlayer;
+            PlayerActionManager playerActions = _registry.PlayerActions;
+            if (executor != null && playerActions != null && set.Layout is Layout.Dynamic)
+            {
+                var growButtons = new List<PlacementKeybindingHintData>();
+                foreach (GrowOption grow in NetworkExpansionEngine.GrowOptionsFor(map, executor, _registry, building))
+                {
+                    // Per-iteration locals are safe to capture (see the slot loop); playerActions is
+                    // method-scope and never reassigned.
+                    IPlayerAction? action = grow.Action;
+                    bool enabled = grow.Available && action != null;
+                    growButtons.Add(new PlacementKeybindingHintData
+                    {
+                        OverrideTitle = new RawText(enabled ? $"Grow {grow.Face}" : $"Grow {grow.Face} — {grow.BlockedReason}"),
+                        ActiveIf = () => enabled,
+                        Handler = () =>
+                        {
+                            if (enabled && action != null)
+                            {
+                                playerActions.TryScheduleAction(action);
+                            }
+                        },
+                    });
+                }
+
+                if (growButtons.Count > 0)
+                {
+                    yield return new HUDSidePanelModuleInfoText.Data(new RawText("Grow"));
+                    yield return new HUDSidePanelModuleActionButtons.Data(growButtons);
+                }
+
+                ShrinkOption? shrink = NetworkExpansionEngine.ShrinkOptionFor(map, executor, _registry, building);
+                if (shrink != null)
+                {
+                    IPlayerAction? shrinkAction = shrink.Action;
+                    bool shrinkEnabled = shrink.Available && shrinkAction != null;
+                    yield return new HUDSidePanelModuleActionButtons.Data(new[]
+                    {
+                        new PlacementKeybindingHintData
+                        {
+                            OverrideTitle = new RawText(shrinkEnabled ? "Shrink (remove this piece)" : $"Shrink — {shrink.BlockedReason}"),
+                            ActiveIf = () => shrinkEnabled,
+                            Handler = () =>
+                            {
+                                if (shrinkEnabled && shrinkAction != null)
+                                {
+                                    playerActions.TryScheduleAction(shrinkAction);
+                                }
+                            },
+                        },
+                    });
+                }
             }
         }
 
@@ -143,9 +214,40 @@ namespace ExpandableX.Core
         public IEnumerable<IHUDSidePanelModuleData> GetInfoModules(IBuildingDefinition definition) =>
             _inner != null ? _inner.GetInfoModules(definition) : System.Array.Empty<IHUDSidePanelModuleData>();
 
-        private void SwapTo(IMapModel map, BuildingModel building, string currentDefName, string targetDefName)
+        /// <summary>
+        /// Resolve the definition (and rotation) a slot-role change should swap to. For a network
+        /// (<see cref="Layout.Dynamic"/>) piece this is canonicalisation-aware — variants are generated
+        /// one-per-rotational-class, so the changed world-face assignment is realised back to its
+        /// canonical def + the rotation that reproduces it (<see cref="NetworkPieceRealization"/>). For a
+        /// static layout the table holds every literal combo at the placed rotation, so a direct lookup
+        /// suffices. Returns false when the family doesn't generate the result (pruned/invalid).
+        /// </summary>
+        private bool TryResolveSlotChange(
+            PieceVariantSet set, VariantPlacement placement, BuildingModel building,
+            ConnectorSlot slot, SlotRole role, out string targetDef, out GridRotation targetRotation)
         {
-            if (targetDefName == currentDefName)
+            GridRotation rotation = building.Transform.Rotation;
+            targetRotation = rotation;
+
+            if (set.Layout is Layout.Dynamic
+                && set.SlotFaceDirections is { } faces
+                && faces.TryGetValue(slot.Id, out TileDirection localFace))
+            {
+                var worldFaces = new Dictionary<TileDirection, SlotRole>(
+                    NetworkPieceRealization.WorldFaceRoles(set, placement.SlotState, rotation))
+                {
+                    [localFace.Rotate(rotation)] = role,
+                };
+                return NetworkPieceRealization.TryRealize(set, worldFaces, rotation, out targetDef, out targetRotation);
+            }
+
+            string comboKey = VariantEncoder.ComboKey(set.Slots, WithRole(placement.SlotState, slot.Id, role));
+            return set.DefIdByComboKey.TryGetValue(comboKey, out targetDef);
+        }
+
+        private void SwapTo(IMapModel map, BuildingModel building, string currentDefName, string targetDefName, GridRotation targetRotation)
+        {
+            if (targetDefName == currentDefName && targetRotation == building.Transform.Rotation)
             {
                 return;
             }
@@ -172,10 +274,13 @@ namespace ExpandableX.Core
             // Schedule an undoable swap to the variant whose id encodes the new slot state. It keeps
             // the same BuildingId (so the HUD selection / panel survives) and carries the building's
             // configuration across — null for a config-less building like the painter, which is
-            // correct (id-as-truth variants have no configuration factory). The action system runs it
-            // at a safe point and records it on the undo stack; its reverse swaps back.
+            // correct (id-as-truth variants have no configuration factory). The target rotation may
+            // differ from the current one for a network piece (its orientation is realised via
+            // GridRotation), but the connectors land on the same world faces by construction. The
+            // action system runs it at a safe point and records it on the undo stack; its reverse swaps back.
+            var transform = new GlobalTileTransform(building.Transform.Position, targetRotation);
             var swap = new ExpandableXSwapVariantAction(
-                map, executor, building.Id, building.Transform, building.Configuration, building.Definition, targetDef);
+                map, executor, building.Id, transform, building.Configuration, building.Definition, targetDef);
             playerActions.TryScheduleAction(swap);
 
             _logger.Info.Log($"ExpandableX-Core: slot change: scheduled swap {currentDefName} -> {targetDefName}");

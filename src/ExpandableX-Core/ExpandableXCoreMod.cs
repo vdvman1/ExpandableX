@@ -1,7 +1,8 @@
+extern alias monomod;
 using ExpandableX.Core;
 using Game.Orchestration;
 using JetBrains.Annotations;
-using MonoMod.RuntimeDetour;
+using monomod::MonoMod.RuntimeDetour;
 using ShapezShifter.Hijack;
 using ShapezShifter.SharpDetour;
 using ILogger = Core.Logging.ILogger;
