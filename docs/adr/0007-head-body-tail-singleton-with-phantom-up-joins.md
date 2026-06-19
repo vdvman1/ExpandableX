@@ -1,5 +1,7 @@
 # DynamicLayout uses head/body/tail/singleton roles with phantom Up-facing joins on ends
 
+**Status:** superseded by [ADR-0012](./0012-network-model-for-dynamic-layouts.md). The **singleton** story (default singleton = unmodified base-game definition for save-compat; optional configurable singleton for 1-piece slot state) survives. The **head/body/tail** roles and the **phantom Up-facing join** trick do not — the network model identifies pieces by id-encoded join-face set and closes borders by omitting join connectors on outer faces, so no phantom is needed.
+
 Refines [ADR-0006](./0006-join-connectors-for-dynamic-layout-matching.md).
 
 A `DynamicLayout` registration covers **a family of `MetaBuildingDefinition` roles** for a single expandable building:

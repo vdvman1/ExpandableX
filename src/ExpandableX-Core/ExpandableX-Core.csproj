@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
-    <Nullable>disable</Nullable>
-    <LangVersion>9</LangVersion>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
     <RootNamespace>ExpandableX.Core</RootNamespace>
     <AssemblyName>ExpandableX-Core</AssemblyName>
     <NoWarn>$(NoWarn);CS0436</NoWarn>
@@ -22,6 +22,11 @@
     <Reference Include="MonoMod.RuntimeDetour">
       <HintPath>$(SPZ2_PATH)\..\..\..\..\workshop\content\2162800\3542712030\MonoMod.RuntimeDetour.dll</HintPath>
       <Private>False</Private>
+      <!-- MonoMod.RuntimeDetour ships its own copies of the nullable-annotation attributes
+           (NotNullWhen, etc.) that also live in netstandard, so its types are aliased out of the
+           global namespace to avoid CS0433 ambiguity. Reach it via `extern alias monomod` (only
+           ExpandableXCoreMod needs it). -->
+      <Aliases>monomod</Aliases>
     </Reference>
 
     <Reference Include="SPZGameAssembly">
@@ -80,6 +85,10 @@
       <HintPath>$(SPZ2_PATH)\Game.Content.Features.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="Game.Content">
+      <HintPath>$(SPZ2_PATH)\Game.Content.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Core">
       <HintPath>$(SPZ2_PATH)\Core.dll</HintPath>
       <Private>False</Private>
@@ -121,6 +130,13 @@
 
   <ItemGroup>
     <PackageReference Include="Krafs.Publicizer" Version="2.3.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+
+    <!-- Compile-time polyfills (IsExternalInit etc.) so modern C# works on
+         netstandard2.1 with no runtime dependency. -->
+    <PackageReference Include="PolySharp" Version="1.14.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>

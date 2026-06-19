@@ -1,5 +1,7 @@
 # DynamicLayout uses dedicated join connectors built on BuildingPathSimulationSystem
 
+**Status:** superseded by [ADR-0012](./0012-network-model-for-dynamic-layouts.md). The dedicated `Join connector` type survives; the `BuildingPathSimulationSystem<,,>` foundation (and its 1×N / one-in-one-out consequences) does not — `DynamicLayout` now rides the connected-components network system instead.
+
 `DynamicLayout` pattern matching is implemented on Shapez's existing `BuildingPathSimulationSystem<TConnectableSimulation, TInput, TOutput>` (the same generic base `ConveyorSimulationSystem` extends to make belts into conveyors). The "joining" mechanism — how the matcher decides which adjacent pieces form one logical building — uses **dedicated join connectors** that are distinct from the building's gameplay connectors (item, signal, fluid, etc.).
 
 A piece in a `DynamicLayout`-registered `MetaBuildingDefinition` declares:

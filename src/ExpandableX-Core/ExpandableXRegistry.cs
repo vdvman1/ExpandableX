@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using ILogger = Core.Logging.ILogger;
 
@@ -11,31 +9,28 @@ namespace ExpandableX.Core
 
         public GameMode CurrentMode { get; internal set; }
 
+        /// <summary>The session's player action manager, captured once at session init so slot
+        /// changes can be dispatched as undoable actions. Null until a session has started.</summary>
+        public PlayerActionManager PlayerActions { get; internal set; }
+
+        /// <summary>The local player, captured alongside <see cref="PlayerActions"/> (needed to author actions).</summary>
+        public Player LocalPlayer { get; internal set; }
+
         private readonly ILogger _logger;
-        private readonly Dictionary<string, Layout> _registrations = new Dictionary<string, Layout>();
-        private readonly ConcurrentQueue<Action> _deferredActions = new ConcurrentQueue<Action>();
+        private readonly Dictionary<string, Registration> _registrations = new Dictionary<string, Registration>();
+        private readonly Dictionary<string, VariantPlacement> _variantsByDefId = new Dictionary<string, VariantPlacement>();
 
-        public IReadOnlyDictionary<string, Layout> Registrations => _registrations;
+        public IReadOnlyDictionary<string, Registration> Registrations => _registrations;
 
-        public void EnqueueDeferred(Action action)
-        {
-            _deferredActions.Enqueue(action);
-        }
+        /// <summary>
+        /// Decode catalog: variant (or base / override) definition id name → what it represents.
+        /// Populated per session by the simulation-systems rewirer; idempotent across re-runs since
+        /// ids are deterministic. Consumed by the slot UI / swap logic.
+        /// </summary>
+        public IReadOnlyDictionary<string, VariantPlacement> VariantsByDefId => _variantsByDefId;
 
-        internal void DrainDeferred()
-        {
-            while (_deferredActions.TryDequeue(out Action action))
-            {
-                try
-                {
-                    action();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Info.Log($"ExpandableX-Core: deferred action threw: {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-        }
+        internal void RecordVariant(string definitionIdName, VariantPlacement placement) =>
+            _variantsByDefId[definitionIdName] = placement;
 
         internal static void Initialize(ILogger logger)
         {
@@ -47,40 +42,30 @@ namespace ExpandableX.Core
             _logger = logger;
         }
 
-        public RegistrationResult Register(Layout layout)
+        public RegistrationResult Register(Registration registration)
         {
-            string groupId = layout.GroupId;
-            if (_registrations.ContainsKey(groupId))
+            string id = registration.RegistrationId;
+            if (_registrations.ContainsKey(id))
             {
-                _logger.Info.Log($"ExpandableX-Core: {Describe(layout)} already registered, yielding (this mod's expandability for it is no longer needed)");
+                _logger.Info.Log($"ExpandableX-Core: {Describe(registration)} already registered, yielding (this mod's expandability for it is no longer needed)");
                 return RegistrationResult.Yielded;
             }
-            _registrations[groupId] = layout;
-            _logger.Info.Log($"ExpandableX-Core: registered {Describe(layout)}");
+            _registrations[id] = registration;
+            _logger.Info.Log($"ExpandableX-Core: registered {Describe(registration)}");
             return RegistrationResult.Registered;
         }
 
-        public RegistrationResult RegisterOverride(Layout layout)
+        public RegistrationResult RegisterOverride(Registration registration)
         {
-            string groupId = layout.GroupId;
-            bool wasPresent = _registrations.ContainsKey(groupId);
-            _registrations[groupId] = layout;
-            _logger.Info.Log($"ExpandableX-Core: override-registered {Describe(layout)} ({(wasPresent ? "replacing prior registration" : "no prior registration")})");
+            string id = registration.RegistrationId;
+            bool wasPresent = _registrations.ContainsKey(id);
+            _registrations[id] = registration;
+            _logger.Info.Log($"ExpandableX-Core: override-registered {Describe(registration)} ({(wasPresent ? "replacing prior registration" : "no prior registration")})");
             return wasPresent ? RegistrationResult.Overridden : RegistrationResult.Registered;
         }
 
-        private static string Describe(Layout layout)
-        {
-            switch (layout)
-            {
-                case StaticLayout s:
-                    return $"{s.GroupId} [StaticLayout, {s.Slots.Count} slot(s)]";
-                case DynamicLayout d:
-                    return $"{d.GroupId} [DynamicLayout]";
-                default:
-                    return $"{layout.GroupId} [{layout.GetType().Name}]";
-            }
-        }
+        private static string Describe(Registration registration) =>
+            $"{registration.RegistrationId} [{registration.Layouts.Count} layout(s), {registration.Expansions.Count} expansion(s)]";
     }
 
     public enum RegistrationResult
