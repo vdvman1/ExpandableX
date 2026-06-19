@@ -75,6 +75,10 @@
       <HintPath>$(SPZ2_PATH)\Game.Content.Features.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="Game.Content">
+      <HintPath>$(SPZ2_PATH)\Game.Content.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Core">
       <HintPath>$(SPZ2_PATH)\Core.dll</HintPath>
       <Private>False</Private>

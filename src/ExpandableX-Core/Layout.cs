@@ -8,11 +8,26 @@ namespace ExpandableX.Core
     /// A specific valid state a player can put an expandable building into. Two kinds —
     /// <see cref="Static"/> (swap) and <see cref="Dynamic"/> (multi-piece composition).
     /// See CONTEXT.md "Layout".
+    ///
+    /// The two kinds carry their own, fit-for-purpose simulation hook, because they are simulated
+    /// differently: a <see cref="Static"/> building is a regular single building, so it uses an atomic
+    /// per-definition simulation (<see cref="Static.Simulation"/>) exactly as the base game does; a
+    /// <see cref="Dynamic"/> building is a connected network of pieces, so it uses a network node
+    /// (<see cref="Dynamic.SimulationFactory"/>). A pure-swap family like the cutter needs neither.
     /// </summary>
     public abstract record Layout(string LayoutId)
     {
-        /// <summary>A layout backed by a single piece (painter, each cutter size).</summary>
-        public sealed record Static(string LayoutId, PieceSpec Piece) : Layout(LayoutId);
+        /// <summary>
+        /// A layout backed by a single piece (painter, each cutter size). <see cref="Simulation"/>, when
+        /// set, attaches a per-definition atomic simulation to each variant the framework synthesises —
+        /// the way regular base-game buildings are simulated. Build it with the <see cref="StaticSimulation"/>
+        /// helpers (which wrap the game's atomic simulation systems). Optional: a swap-only family whose
+        /// variants reuse already-simulated base-game definitions (the cutter) needs none.
+        /// </summary>
+        public sealed record Static(
+            string LayoutId,
+            PieceSpec Piece,
+            AtomicSimulationInstaller? Simulation = null) : Layout(LayoutId);
 
         /// <summary>
         /// A network-model multi-piece layout (the AND gate). The author declares <b>one</b> gameplay
@@ -22,16 +37,15 @@ namespace ExpandableX.Core
         /// <b>singleton</b> (slots exactly as declared, never a join) and a <b>network piece</b> (each
         /// face-slot may also be a <c>Join</c>, and at least one must be). <see cref="ShapeLimit"/>
         /// constrains which shapes are reachable; <see cref="NetworkPredicates"/> are the building-wide
-        /// validity rules. <see cref="SimulationFactory"/> builds the one runtime simulation per connected
-        /// network (author-supplied per ADR-0011; optional so the matcher ships before its first
-        /// consumer). See CONTEXT.md "DynamicLayout" and ADR-0012.
+        /// validity rules. <see cref="SimulationFactory"/> builds the one network node per connected
+        /// component (the singleton is the one-member case). See CONTEXT.md "DynamicLayout" and ADR-0012.
         /// </summary>
         public sealed record Dynamic(
             string LayoutId,
             PieceSpec Piece,
             IShapeLimit ShapeLimit,
             IReadOnlyList<INetworkPredicate> NetworkPredicates,
-            IJoinNetworkSimulationFactory? SimulationFactory = null) : Layout(LayoutId);
+            ExpandableSimulationFactory? SimulationFactory = null) : Layout(LayoutId);
     }
 
     public static class LayoutExtensions

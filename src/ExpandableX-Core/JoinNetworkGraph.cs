@@ -35,7 +35,7 @@ namespace ExpandableX.Core
     /// Maintains the connected components ("networks") of join-adjacent members under incremental
     /// add/remove, reporting the minimal set of networks that changed each time. Pure graph logic
     /// with no game dependency (so it is unit-testable in isolation, ADR-0012); the game-facing
-    /// <see cref="JoinNetworkSystem"/> adapts placed buildings into <see cref="JoinMember{A,B,C}"/>s.
+    /// <see cref="ExpandableSimulationSystem"/> adapts placed buildings into <see cref="JoinMember{A,B,C}"/>s.
     ///
     /// Adjacency is "share a (face, family) key". A network is just its set of members, tracked by
     /// the set object's own identity — there is no synthetic network id to allocate or overflow.

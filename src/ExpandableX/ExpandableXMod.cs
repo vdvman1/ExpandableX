@@ -1,11 +1,11 @@
-using System;
-using System.Collections.Generic;
 using ExpandableX;
 using ExpandableX.Core;
 using Game.Core.Research;
 using JetBrains.Annotations;
 using ShapezShifter.Hijack;
 using ShapezShifter.Kit;
+using System;
+using System.Collections.Generic;
 using ILogger = Core.Logging.ILogger;
 
 [UsedImplicitly]
@@ -50,7 +50,16 @@ public class ExpandableXMod : IMod
                         LocalPredicates: new[]
                         {
                             SlotPredicates.AtLeastOne(new[] { SlotRole.Enabled }),
-                        })),
+                        }),
+                    // Each synthesised painter variant is simulated like the stock painter: the framework
+                    // attaches an atomic per-definition simulation, we just hand it the base game's own
+                    // TopmostPainterSimulation factory (config read off the variant's definition). The
+                    // base definition itself keeps the game's simulation — only synthesised variants get this.
+                    Simulation: StaticSimulation.Stateful(
+                        (definition, deps) => new TopmostPainterSimulationFactory(
+                            definition.ConfigAs<IPainterConfiguration>(),
+                            new ShapeOperationPaintTopmost(deps.ShapeRegistry, deps.ShapeIdManager),
+                            deps.ShapeRegistry))),
             },
             Expansions: Array.Empty<Expansion>()));
     }
@@ -126,7 +135,19 @@ public class ExpandableXMod : IMod
             LayoutId: "AndGate.Network",
             Piece: piece,
             ShapeLimit: ShapeLimits.Free,
-            NetworkPredicates: new[] { NetworkPredicates.AtLeastOne(new[] { SlotRole.Output }) });
+            // One declaration of the gate's connector rules: an AND needs at least one input and at least
+            // one output across the whole building. These gate networks at runtime AND prune impossible
+            // singleton variants (no input, or no output) at generation — no separate local predicate.
+            NetworkPredicates: new[]
+            {
+                NetworkPredicates.AtLeastOne(new[] { SlotRole.Input }),
+                NetworkPredicates.AtLeastOne(new[] { SlotRole.Output }),
+            },
+            // The simulation is the N-input AND (AndGateSignalSimulation) wrapped by the framework's
+            // reusable signal node; a lambda factory suffices — no dedicated factory class.
+            SimulationFactory: (members, tiles) =>
+                new SignalExpandableSimulation<AndGateSignalSimulation>(
+                    members, tiles, (inputs, outputs) => new AndGateSignalSimulation(inputs, outputs)));
 
         ExpandableXRegistry.Instance.Register(new Registration(
             RegistrationId: "AndGate",

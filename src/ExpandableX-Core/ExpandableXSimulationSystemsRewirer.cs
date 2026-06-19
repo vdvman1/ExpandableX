@@ -38,27 +38,29 @@ namespace ExpandableX.Core
                 ProcessRegistration(registration, simulationSystems, dependencies);
             }
 
-            AttachJoinNetworkSystem(simulationSystems, dependencies);
+            AttachExpandableSimulationSystem(simulationSystems, dependencies);
         }
 
         /// <summary>
-        /// Add the shared network-model matcher (<see cref="JoinNetworkSystem"/>) when at least one
+        /// Add the shared network matcher (<see cref="ExpandableSimulationSystem"/>) when at least one
         /// registered <see cref="Layout.Dynamic"/> supplies a simulation factory. Keyed per family by
-        /// layout id, so the one system handles every network-model family; with no factories
-        /// registered nothing is added and no buildings carry a <c>JoinJunction</c> at runtime.
+        /// layout id, so the one system handles every network-model family — each connected component of
+        /// joined pieces (a singleton being the one-member case) is served by its family's factory.
+        /// Static layouts are simulated separately, per definition, by their own atomic installer.
+        /// With no dynamic factories registered nothing is added.
         /// </summary>
-        private void AttachJoinNetworkSystem(
+        private void AttachExpandableSimulationSystem(
             ICollection<ISimulationSystem> simulationSystems,
             SimulationSystemsDependencies dependencies)
         {
-            var factories = new Dictionary<string, IJoinNetworkSimulationFactory>();
+            var factories = new Dictionary<string, ExpandableSimulationFactory>();
             foreach (Registration registration in _registry.Registrations.Values)
             {
                 foreach (Layout layout in registration.Layouts)
                 {
-                    if (layout is Layout.Dynamic dynamic && dynamic.SimulationFactory is { } factory)
+                    if (layout is Layout.Dynamic { SimulationFactory: { } factory })
                     {
-                        factories[dynamic.LayoutId] = factory;
+                        factories[layout.LayoutId] = factory;
                     }
                 }
             }
@@ -68,8 +70,8 @@ namespace ExpandableX.Core
                 return;
             }
 
-            simulationSystems.Add(new JoinNetworkSystem(_registry, factories, dependencies.Logger));
-            _logger.Info.Log($"ExpandableX-Core: attached JoinNetworkSystem for {factories.Count} network-model family(ies)");
+            simulationSystems.Add(new ExpandableSimulationSystem(_registry, factories, dependencies.Logger));
+            _logger.Info.Log($"ExpandableX-Core: attached ExpandableSimulationSystem for {factories.Count} simulated family(ies)");
         }
 
         private void ProcessRegistration(
@@ -138,21 +140,37 @@ namespace ExpandableX.Core
 
             PieceExpansion expansion = VariantEncoder.ExplodePiece(effectivePiece, resolver);
 
+            // Network predicates describe a complete building. A singleton (0-join) variant IS a
+            // complete one-piece building, so it must satisfy them too — prune any that can't. This is
+            // what lets one declaration of e.g. "at least one input + one output" both gate networks at
+            // runtime and trim the impossible singleton variants here, with no separate local predicate.
+            // Network pieces (>=1 join) are partial (another piece may supply the missing role), so they
+            // are validated only at runtime, not pruned here.
+            IReadOnlyList<INetworkPredicate> networkPredicates = layout.NetworkPredicatesOf();
+            bool SingletonSatisfiesNetwork(Variant v) =>
+                HasJoin(v.SlotState)
+                || networkPredicates.Count == 0
+                || networkPredicates.All(p => p.IsValid(new NetworkState(layout, new[]
+                {
+                    new PieceState(effectivePiece, expansion.ExpandedSlots, v.SlotState),
+                })));
+
             // Canonicalise only the network (>=1-join) variants: their rotation is framework-managed by
             // grow/shrink, so one def per rotational class is right. Singleton (0-join) variants are
             // placed and rotated by the player, so each local config is its own def (no rotation reuse) —
             // exactly like a static slot config; canonicalising them would hijack the player's rotation
             // and break the slot UI.
-            IReadOnlyList<Variant> variants = canonicalize
-                ? expansion.Variants
-                    .Where(v => !HasJoin(v.SlotState) || RotationCanonicalizer.IsCanonical(FaceMap(v.SlotState, slotFaces!)))
-                    .ToList()
-                : expansion.Variants;
+            bool CanonicalKept(Variant v) =>
+                !canonicalize || !HasJoin(v.SlotState) || RotationCanonicalizer.IsCanonical(FaceMap(v.SlotState, slotFaces!));
+
+            IReadOnlyList<Variant> variants = expansion.Variants
+                .Where(v => SingletonSatisfiesNetwork(v) && CanonicalKept(v))
+                .ToList();
 
             string kind = layout is Layout.Dynamic ? "dynamic" : "static";
-            _logger.Info.Log(canonicalize
-                ? $"ExpandableX-Core:   {kind} piece '{baseDef.Id.Name}': {variants.Count} kept of {expansion.Variants.Count} (singletons in full, network pieces canonicalised; {expansion.Pruned.Count} pruned)"
-                : $"ExpandableX-Core:   {kind} piece '{baseDef.Id.Name}': {expansion.Variants.Count} variant(s), {expansion.Pruned.Count} pruned");
+            _logger.Info.Log(
+                $"ExpandableX-Core:   {kind} piece '{baseDef.Id.Name}': {variants.Count} kept of {expansion.Variants.Count} " +
+                $"(network pieces canonicalised, singletons trimmed by network predicates; {expansion.Pruned.Count} locally pruned)");
 
             // First pass: resolve each combination to a definition id (synthesising new defs as needed).
             var defIdByComboKey = new Dictionary<string, string>(variants.Count);
@@ -163,7 +181,7 @@ namespace ExpandableX.Core
             {
                 string comboKey = VariantEncoder.ComboKey(expansion.ExpandedSlots, variant.SlotState);
                 string defIdName = ResolveOrSynthesise(
-                    variant, baseDef, effectivePiece, expansion, resolver, hiddenGroups, simulationSystems, dependencies, ref synthesised);
+                    variant, layout, baseDef, effectivePiece, expansion, resolver, hiddenGroups, simulationSystems, dependencies, ref synthesised);
 
                 defIdByComboKey[comboKey] = defIdName;
                 placements.Add((defIdName, variant.SlotState));
@@ -182,6 +200,7 @@ namespace ExpandableX.Core
         /// <summary>Map a combination to its definition id, creating a synthesised definition when it isn't the base or an override.</summary>
         private string ResolveOrSynthesise(
             Variant variant,
+            Layout layout,
             IBuildingDefinition baseDef,
             PieceSpec piece,
             PieceExpansion expansion,
@@ -246,7 +265,12 @@ namespace ExpandableX.Core
 
             hiddenGroup.AddInternalVariant(variantDef);
             dependencies.Mode.Buildings._DefinitionsById.Add(variantDef.Id, variantDef);
-            AttachPainterSimulation(variantDef, simulationSystems, dependencies);
+
+            // Attach the static layout's per-definition simulation to this newly synthesised variant —
+            // the way regular buildings are simulated. Only synthesised variants reach here (the base and
+            // override targets returned earlier, so they keep the game's own simulation). A dynamic layout
+            // simulates via the network system instead and installs nothing here.
+            (layout as Layout.Static)?.Simulation?.Invoke(variantDef, simulationSystems, dependencies);
             synthesised++;
             return defIdName;
         }
@@ -433,22 +457,6 @@ namespace ExpandableX.Core
             return faces.Count == 4
                 && faces.Contains(TileDirection.East) && faces.Contains(TileDirection.South)
                 && faces.Contains(TileDirection.West) && faces.Contains(TileDirection.North);
-        }
-
-        private void AttachPainterSimulation(
-            BuildingDefinition variantDef,
-            ICollection<ISimulationSystem> simulationSystems,
-            SimulationSystemsDependencies dependencies)
-        {
-            if (!variantDef.CustomData.TryGet<IPainterConfiguration>(out IPainterConfiguration painterConfig))
-            {
-                return;
-            }
-
-            var paintOp = new ShapeOperationPaintTopmost(dependencies.ShapeRegistry, dependencies.ShapeIdManager);
-            var simFactory = new TopmostPainterSimulationFactory(painterConfig, paintOp, dependencies.ShapeRegistry);
-            simulationSystems.Add(new AtomicStatefulBuildingSimulationSystem<TopmostPainterSimulation, PainterSimulationState>(
-                simFactory, variantDef.Id, dependencies.Logger));
         }
 
         private static BuildingDefinitionGroup CreateHiddenGroup(

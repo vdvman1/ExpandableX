@@ -5,10 +5,13 @@ using System.Linq;
 namespace ExpandableX.Core
 {
     /// <summary>
-    /// A rule spanning a whole logical building (all pieces of a network). Evaluated at runtime only
-    /// — building-wide predicates do not prune variants (a piece with every face disabled is a valid
-    /// spacer). Used to gate grow/shrink and refuse an action that would leave the building invalid.
-    /// See CONTEXT.md "Expansion" (the Network kind) and ADR-0012.
+    /// A rule spanning a whole logical building (all pieces of a network). Used at runtime to gate
+    /// grow/shrink and refuse an action that would leave the building invalid, <b>and</b> at generation
+    /// to prune impossible <i>singleton</i> (0-join) variants — a singleton is a complete one-piece
+    /// building, so it must satisfy the same building-wide rules (one declaration covers both). Network
+    /// <i>pieces</i> (>=1 join) are partial and are <b>not</b> pruned by these (another piece may supply
+    /// a missing role; a piece with every face disabled is a valid spacer) — they are validated only at
+    /// runtime. See CONTEXT.md "Expansion" (the Network kind) and ADR-0012.
     /// </summary>
     public interface INetworkPredicate
     {

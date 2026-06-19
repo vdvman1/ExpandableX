@@ -10,18 +10,20 @@ using ILogger = Core.Logging.ILogger;
 namespace ExpandableX.Core
 {
     /// <summary>
-    /// The single, shared simulation system that recognises network-model <c>DynamicLayout</c>
-    /// buildings: it groups placed pieces joined through their <see cref="JoinJunction"/> connectors
-    /// into connected networks and surfaces one runtime simulation per network (ADR-0012). It is
-    /// added to the live simulation systems by <see cref="ExpandableXSimulationSystemsRewirer"/>;
-    /// no game patching is involved.
+    /// The single, shared simulation system for every expandable family that has a simulation: it
+    /// groups a family's placed pieces into connected components — joined through their
+    /// <see cref="JoinJunction"/> connectors — and surfaces one runtime simulation per component
+    /// (ADR-0012). A configurable singleton or any 0-join piece forms its own one-member component, so
+    /// the same system (and the same author-supplied factory) serves the standalone building and the
+    /// multi-piece network alike. It is added to the live simulation systems by
+    /// <see cref="ExpandableXSimulationSystemsRewirer"/>; no game patching is involved.
     ///
-    /// Selection is by connector presence: a building participates iff its definition carries a
-    /// <see cref="JoinJunction"/> <b>and</b> its family (resolved from the definition id via the
-    /// registry decode catalog) has a registered <see cref="IJoinNetworkSimulationFactory"/>.
-    /// Adjacency is geometric — a join connector at world pivot <c>P</c> meets another piece's join
-    /// connector at <c>P</c>'s counterpart — and additionally same-family, so different families
-    /// never fuse (the matcher is the second line of defence behind border-closing geometry).
+    /// Selection is by catalog membership: a building participates iff its family (resolved from the
+    /// definition id via the registry decode catalog) has a registered
+    /// <see cref="ExpandableSimulationFactory"/>. Adjacency is geometric — a join connector at world
+    /// pivot <c>P</c> meets another piece's join connector at <c>P</c>'s counterpart — and additionally
+    /// same-family, so different families never fuse (the matcher is the second line of defence behind
+    /// border-closing geometry). A member with no join connectors never fuses with anything.
     ///
     /// Network state is derived entirely from placement geometry + definition data; nothing
     /// per-building is stored, keeping saves/blueprints exact. Any change to a network's membership
@@ -33,7 +35,7 @@ namespace ExpandableX.Core
     /// Isolation from the vanilla fluid/signal networks is structural: membership and matching key
     /// only on <see cref="JoinJunction"/> (our own connector type) and all grouping state lives here.
     /// </summary>
-    internal sealed class JoinNetworkSystem
+    internal sealed class ExpandableSimulationSystem
         : IBuildingObserverSimulationSystem, ITileSimulationSystem, IBunchEditSystem, ISimulationSystem, IDisposable
     {
         private readonly record struct MemberRecord(string Family, GlobalTileCoordinate[] Tiles);
@@ -44,7 +46,7 @@ namespace ExpandableX.Core
 
         private readonly ILogger _logger;
         private readonly ExpandableXRegistry _registry;
-        private readonly IReadOnlyDictionary<string, IJoinNetworkSimulationFactory> _factories;
+        private readonly IReadOnlyDictionary<string, ExpandableSimulationFactory> _factories;
 
         private readonly JoinNetworkGraph<BuildingInstance, GlobalTilePivot, string> _graph = new();
 
@@ -55,18 +57,18 @@ namespace ExpandableX.Core
         // Committed graph members → the data we need to maintain the tile index and rebuild nodes.
         private readonly Dictionary<BuildingInstance, MemberRecord> _committed = new();
         // Every occupied tile of every network → that network's node (the tile-simulation lookup).
-        private readonly Dictionary<GlobalTileCoordinate, IJoinNetworkSimulation> _byTile = new();
+        private readonly Dictionary<GlobalTileCoordinate, IExpandableSimulation> _byTile = new();
         // Member → its network's node.
-        private readonly Dictionary<BuildingInstance, IJoinNetworkSimulation> _nodeByMember = new();
+        private readonly Dictionary<BuildingInstance, IExpandableSimulation> _nodeByMember = new();
 
         // Bunch-edit accumulation: re-network once at FinishBunchEdit instead of per building.
         private bool _inBunch;
         private readonly Dictionary<BuildingInstance, PendingMember> _pendingAdds = new();
         private readonly HashSet<BuildingInstance> _pendingRemoves = new();
 
-        public JoinNetworkSystem(
+        public ExpandableSimulationSystem(
             ExpandableXRegistry registry,
-            IReadOnlyDictionary<string, IJoinNetworkSimulationFactory> factories,
+            IReadOnlyDictionary<string, ExpandableSimulationFactory> factories,
             ILogger logger)
         {
             _registry = registry;
@@ -113,7 +115,7 @@ namespace ExpandableX.Core
 
         public bool TryGetTileSimulation(in GlobalTileCoordinate position, out ILocalizedTileSimulation tileSimulation)
         {
-            if (_byTile.TryGetValue(position, out IJoinNetworkSimulation? node))
+            if (_byTile.TryGetValue(position, out IExpandableSimulation? node))
             {
                 tileSimulation = node;
                 return true;
@@ -169,7 +171,7 @@ namespace ExpandableX.Core
             _onBeforeSimulationDestroyed.Dispose();
         }
 
-        /// <summary>Resolve whether a placed building is a network member of a registered family, computing its join faces and occupied tiles.</summary>
+        /// <summary>Resolve whether a placed building belongs to a simulated family, computing its join faces (if any) and occupied tiles.</summary>
         private bool TryResolveMember(in BuildingInstance building, out PendingMember member)
         {
             member = default;
@@ -183,16 +185,13 @@ namespace ExpandableX.Core
                 return false;
             }
 
-            IReadOnlyList<JoinJunction> joins = connectorData.BuildingConnectorsOfType<JoinJunction>();
-            if (joins.Count == 0)
-            {
-                return false;
-            }
-
+            // Membership is by catalog + factory, NOT by the presence of a join connector: a 0-join
+            // building (a configurable singleton, or a non-network family like the painter) is still a
+            // member — it forms its own one-member component (JoinNetworkGraph handles a face-less
+            // member as a singleton component). This is what lets one author-supplied factory serve the
+            // standalone building and the multi-piece network through the same system (ADR-0012).
             if (!_registry.VariantsByDefId.TryGetValue(building.Definition.Id.Name, out VariantPlacement? placement))
             {
-                // A join-carrying piece with no catalog entry shouldn't happen (variant generation
-                // records every piece); ignore it rather than guess a family.
                 return false;
             }
 
@@ -202,6 +201,17 @@ namespace ExpandableX.Core
                 return false;
             }
 
+            // Don't double-simulate a def the game already simulates: an override target reuses a
+            // pre-existing, separately-simulated def. (Synthesised variants and an author's own base are
+            // ours to simulate.)
+            if (placement.Set.Piece.VariantOverrides is { } overrides
+                && overrides.Values.Contains(building.Definition.Id.Name))
+            {
+                return false;
+            }
+
+            // Join faces drive adjacency; a 0-join member produces an empty face list and never fuses.
+            IReadOnlyList<JoinJunction> joins = connectorData.BuildingConnectorsOfType<JoinJunction>();
             var faces = new List<GlobalTilePivot>(joins.Count);
             foreach (JoinJunction join in joins)
             {
@@ -264,7 +274,7 @@ namespace ExpandableX.Core
         private void TearDown(IReadOnlyCollection<BuildingInstance> network)
         {
             BuildingInstance any = network.First();
-            if (!_nodeByMember.TryGetValue(any, out IJoinNetworkSimulation? node))
+            if (!_nodeByMember.TryGetValue(any, out IExpandableSimulation? node))
             {
                 return;
             }
@@ -291,7 +301,7 @@ namespace ExpandableX.Core
         {
             BuildingInstance first = network.First();
             MemberRecord seed = _committed[first];
-            IJoinNetworkSimulationFactory factory = _factories[seed.Family];
+            ExpandableSimulationFactory createSimulation = _factories[seed.Family];
 
             // Compute the network footprint once: distinct buildings occupy distinct tiles, so the
             // union is a plain concatenation. This single set feeds both the node (its
@@ -302,7 +312,7 @@ namespace ExpandableX.Core
                 footprint.AddRange(_committed[member].Tiles);
             }
 
-            IJoinNetworkSimulation node = factory.Create(network, footprint);
+            IExpandableSimulation node = createSimulation(network, footprint);
             _simulations.Add(node);
 
             foreach (BuildingInstance member in network)
