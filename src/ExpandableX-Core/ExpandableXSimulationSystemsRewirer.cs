@@ -43,35 +43,45 @@ namespace ExpandableX.Core
 
         /// <summary>
         /// Add the shared network matcher (<see cref="ExpandableSimulationSystem"/>) when at least one
-        /// registered <see cref="Layout.Dynamic"/> supplies a simulation factory. Keyed per family by
-        /// layout id, so the one system handles every network-model family — each connected component of
-        /// joined pieces (a singleton being the one-member case) is served by its family's factory.
-        /// Static layouts are simulated separately, per definition, by their own atomic installer.
-        /// With no dynamic factories registered nothing is added.
+        /// registered <see cref="Layout.Dynamic"/> family exists. The system tracks the join network of
+        /// every dynamic family (so grow/shrink re-validation can read its membership — issue #7) and
+        /// additionally builds a runtime simulation node for each family that supplies a factory, keyed per
+        /// family by layout id. Each connected component of joined pieces (a singleton being the one-member
+        /// case) is served by its family's factory, if any. Static layouts are simulated separately, per
+        /// definition, by their own atomic installer. With no dynamic family registered nothing is added.
         /// </summary>
         private void AttachExpandableSimulationSystem(
             ICollection<ISimulationSystem> simulationSystems,
             SimulationSystemsDependencies dependencies)
         {
             var factories = new Dictionary<string, ExpandableSimulationFactory>();
+            int dynamicFamilies = 0;
             foreach (Registration registration in _registry.Registrations.Values)
             {
                 foreach (Layout layout in registration.Layouts)
                 {
-                    if (layout is Layout.Dynamic { SimulationFactory: { } factory })
+                    if (layout is not Layout.Dynamic dynamic)
+                    {
+                        continue;
+                    }
+
+                    dynamicFamilies++;
+                    if (dynamic.SimulationFactory is { } factory)
                     {
                         factories[layout.LayoutId] = factory;
                     }
                 }
             }
 
-            if (factories.Count == 0)
+            if (dynamicFamilies == 0)
             {
                 return;
             }
 
-            simulationSystems.Add(new ExpandableSimulationSystem(_registry, factories, dependencies.Logger));
-            _logger.Info.Log($"ExpandableX-Core: attached ExpandableSimulationSystem for {factories.Count} simulated family(ies)");
+            var system = new ExpandableSimulationSystem(_registry, factories, dependencies.Logger);
+            _registry.NetworkSimulation = system;
+            simulationSystems.Add(system);
+            _logger.Info.Log($"ExpandableX-Core: attached ExpandableSimulationSystem tracking {dynamicFamilies} dynamic family(ies) ({factories.Count} simulated)");
         }
 
         private void ProcessRegistration(

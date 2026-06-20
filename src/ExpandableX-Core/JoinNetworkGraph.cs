@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 
 namespace ExpandableX.Core
 {
@@ -63,6 +64,19 @@ namespace ExpandableX.Core
 
         /// <summary>The current networks (connected components). Live view for tests/introspection.</summary>
         public IEnumerable<IReadOnlyCollection<TMember>> Networks => _networks;
+
+        /// <summary>The connected component (network) <paramref name="member"/> currently belongs to, if it is tracked.</summary>
+        public bool TryGetNetwork(TMember member, [NotNullWhen(true)] out IReadOnlyCollection<TMember>? network)
+        {
+            if (_networkOf.TryGetValue(member, out HashSet<TMember>? net))
+            {
+                network = net;
+                return true;
+            }
+
+            network = null;
+            return false;
+        }
 
         /// <summary>Apply a batch of additions and removals, returning the networks that changed.</summary>
         public NetworkDelta<TMember> Apply(

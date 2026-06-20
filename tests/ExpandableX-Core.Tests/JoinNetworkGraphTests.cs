@@ -197,5 +197,45 @@ namespace ExpandableX.Core.Tests
             Assert.Single(delta.Formed);
             Assert.True(ContainsSet(delta.Formed, 1, 2, 3));
         }
+
+        [Fact]
+        public void TryGetNetwork_ReturnsTheComponentContainingAMember()
+        {
+            // The membership lookup grow/shrink re-validation reads: any member resolves to its whole
+            // network (a line 1-2-3 — every member returns {1,2,3}), and a member of a different network
+            // resolves only to its own.
+            var g = new JoinNetworkGraph<int, string, string>();
+            g.Apply(Add(M(1, "ab"), M(2, "ab", "bc"), M(3, "bc")), NoneRemoved);
+            g.Apply(Add(M(4, "de"), M(5, "de")), NoneRemoved);
+
+            Assert.True(g.TryGetNetwork(2, out IReadOnlyCollection<int>? net123));
+            Assert.True(Set(net123!.ToArray()).SetEquals(Set(1, 2, 3)));
+
+            Assert.True(g.TryGetNetwork(4, out IReadOnlyCollection<int>? net45));
+            Assert.True(Set(net45!.ToArray()).SetEquals(Set(4, 5)));
+        }
+
+        [Fact]
+        public void TryGetNetwork_ReturnsFalseForAnUntrackedMember()
+        {
+            var g = new JoinNetworkGraph<int, string, string>();
+            g.Apply(Add(M(1, "ab"), M(2, "ab")), NoneRemoved);
+
+            Assert.False(g.TryGetNetwork(99, out IReadOnlyCollection<int>? net));
+            Assert.Null(net);
+        }
+
+        [Fact]
+        public void TryGetNetwork_AfterRemoval_NoLongerResolvesTheRemovedMember()
+        {
+            var g = new JoinNetworkGraph<int, string, string>();
+            g.Apply(Add(M(1, "ab"), M(2, "ab", "bc"), M(3, "bc")), NoneRemoved);
+
+            g.Apply(NoneAdded, new[] { 3 });
+
+            Assert.False(g.TryGetNetwork(3, out _));
+            Assert.True(g.TryGetNetwork(1, out IReadOnlyCollection<int>? net));
+            Assert.True(Set(net!.ToArray()).SetEquals(Set(1, 2)));
+        }
     }
 }

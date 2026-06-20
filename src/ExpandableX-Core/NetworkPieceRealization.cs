@@ -1,5 +1,6 @@
 using Game.Core.Coordinates;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 
 namespace ExpandableX.Core
@@ -57,9 +58,26 @@ namespace ExpandableX.Core
             IReadOnlyDictionary<TileDirection, SlotRole> worldFaces,
             GridRotation singletonRotation,
             out string definitionId,
-            out GridRotation rotation)
+            out GridRotation rotation) =>
+            TryRealize(set, worldFaces, singletonRotation, out definitionId, out rotation, out _);
+
+        /// <summary>
+        /// As <see cref="TryRealize(PieceVariantSet,IReadOnlyDictionary{TileDirection,SlotRole},GridRotation,out string,out GridRotation)"/>,
+        /// additionally returning the realised piece's slot-id-keyed roles — the shape a
+        /// <see cref="PieceState"/> needs, so a caller can assemble a candidate <see cref="NetworkState"/>
+        /// (e.g. to re-validate a grow's result against the network predicates) without re-deriving the
+        /// face→slot mapping. Only meaningful when the method returns true.
+        /// </summary>
+        public static bool TryRealize(
+            PieceVariantSet set,
+            IReadOnlyDictionary<TileDirection, SlotRole> worldFaces,
+            GridRotation singletonRotation,
+            out string definitionId,
+            out GridRotation rotation,
+            [NotNullWhen(true)] out IReadOnlyDictionary<string, SlotRole>? slotRoles)
         {
             definitionId = string.Empty;
+            slotRoles = null;
 
             IReadOnlyDictionary<TileDirection, SlotRole> localFaces;
             if (HasJoin(worldFaces))
@@ -78,7 +96,7 @@ namespace ExpandableX.Core
                 return false;
             }
 
-            var slotRoles = new Dictionary<string, SlotRole>(set.Slots.Count);
+            var roles = new Dictionary<string, SlotRole>(set.Slots.Count);
             foreach (ConnectorSlot slot in set.Slots)
             {
                 if (!faces.TryGetValue(slot.Id, out TileDirection localFace)
@@ -87,11 +105,17 @@ namespace ExpandableX.Core
                     return false;
                 }
 
-                slotRoles[slot.Id] = role;
+                roles[slot.Id] = role;
             }
 
-            string comboKey = VariantEncoder.ComboKey(set.Slots, slotRoles);
-            return set.DefIdByComboKey.TryGetValue(comboKey, out definitionId);
+            string comboKey = VariantEncoder.ComboKey(set.Slots, roles);
+            if (!set.DefIdByComboKey.TryGetValue(comboKey, out definitionId))
+            {
+                return false;
+            }
+
+            slotRoles = roles;
+            return true;
         }
 
         private static bool HasJoin(IReadOnlyDictionary<TileDirection, SlotRole> faces) => faces.Values.Contains(SlotRole.Join);

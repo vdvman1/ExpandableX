@@ -31,10 +31,11 @@ namespace ExpandableX.Core
     /// <item>Grow carries the leading face's gameplay role out to the new end ("pinch and stretch"); the
     /// new piece's side faces default to a <see cref="SlotRole.Disabled"/> spacer. Author-chosen grow
     /// defaults are future work.</item>
-    /// <item>Grow does <b>not</b> re-check network predicates: pinch-and-stretch only relocates the
-    /// leading role and adds a spacer, so role counts are invariant and the framework's
-    /// <c>AtLeastN</c>-style predicates stay satisfied. A <i>Custom</i> author predicate has no such
-    /// guarantee — re-validating a grow's result is future work.</item>
+    /// <item>Grow re-validates its resulting whole-building network against the layout's network
+    /// predicates and gates the option (greyed out with the predicate's reason) if any fails (issue #7).
+    /// Pinch-and-stretch keeps role counts invariant, so the framework's <c>AtLeastN</c>-style predicates
+    /// always still hold and never gate a grow; a <i>Custom</i> author predicate has no such guarantee,
+    /// which is what this check exists for.</item>
     /// <item>Shrink is offered on a removable end (exactly one join) and folds that end's leading role
     /// back onto its neighbour; only that axis role carries (a role manually set on the end's side face
     /// is dropped).</item>
@@ -58,6 +59,15 @@ namespace ExpandableX.Core
                 return options;
             }
 
+            // The whole building's other pieces (everything join-connected to the source today, minus the
+            // source itself) form the unchanging part of every candidate post-grow network; assemble their
+            // states once so each face's grow only re-derives the source + new piece. Skipped entirely when
+            // the layout declares no predicates (nothing to re-validate against — the common case).
+            IReadOnlyList<INetworkPredicate> predicates = set.Layout.NetworkPredicatesOf();
+            IReadOnlyList<PieceState> otherMembers = predicates.Count == 0
+                ? System.Array.Empty<PieceState>()
+                : OtherNetworkMembers(registry, building);
+
             GridRotation rotation = building.Transform.Rotation;
             foreach (TileDirection face in PlanarFaces)
             {
@@ -68,7 +78,7 @@ namespace ExpandableX.Core
                     continue;
                 }
 
-                options.Add(BuildGrowOption(map, executor, registry, set, building, worldFaces, rotation, face, currentRole));
+                options.Add(BuildGrowOption(map, executor, registry, set, building, worldFaces, rotation, face, currentRole, predicates, otherMembers));
             }
 
             return options;
@@ -130,7 +140,8 @@ namespace ExpandableX.Core
         private static GrowOption BuildGrowOption(
             IMapModel map, Player executor, ExpandableXRegistry registry, PieceVariantSet set,
             BuildingModel building, IReadOnlyDictionary<TileDirection, SlotRole> worldFaces,
-            GridRotation rotation, TileDirection face, SlotRole carriedRole)
+            GridRotation rotation, TileDirection face, SlotRole carriedRole,
+            IReadOnlyList<INetworkPredicate> predicates, IReadOnlyList<PieceState> otherMembers)
         {
             GlobalTileCoordinate neighbourPos = building.Transform.Position.Move(face);
             if (map.TryGetBuilding(neighbourPos, out _))
@@ -145,7 +156,7 @@ namespace ExpandableX.Core
 
             // Source: the grown face becomes a Join (it now abuts the new piece).
             var sourceWorld = new Dictionary<TileDirection, SlotRole>(worldFaces) { [face] = SlotRole.Join };
-            if (!NetworkPieceRealization.TryRealize(set, sourceWorld, rotation, out string sourceDef, out GridRotation sourceRotation)
+            if (!NetworkPieceRealization.TryRealize(set, sourceWorld, rotation, out string sourceDef, out GridRotation sourceRotation, out var sourceRoles)
                 || !TryResolveDefinition(registry, sourceDef, out var sourceDefinition))
             {
                 return new GrowOption(face, false, "no variant for the grown source", null);
@@ -159,10 +170,32 @@ namespace ExpandableX.Core
                 [face.Rotate(GridRotation.RotateCW)] = SlotRole.Disabled,
                 [face.Rotate(GridRotation.RotateCCW)] = SlotRole.Disabled,
             };
-            if (!NetworkPieceRealization.TryRealize(set, pieceWorld, GridRotation.NoRotate, out string pieceDef, out GridRotation pieceRotation)
+            if (!NetworkPieceRealization.TryRealize(set, pieceWorld, GridRotation.NoRotate, out string pieceDef, out GridRotation pieceRotation, out var pieceRoles)
                 || !TryResolveDefinition(registry, pieceDef, out var pieceDefinition))
             {
                 return new GrowOption(face, false, "no variant for the new piece", null);
+            }
+
+            // Re-validate the resulting whole-building network. Pinch-and-stretch keeps role counts
+            // invariant (so the framework's AtLeastN-style predicates always still hold), but a Custom
+            // author predicate has no such guarantee — gate the grow off with its reason if it would now
+            // fail (issue #7). Candidate network = the unchanged other members + the grown source (its
+            // grown face now a Join) + the new piece.
+            if (predicates.Count > 0)
+            {
+                var pieces = new List<PieceState>(otherMembers.Count + 2);
+                pieces.AddRange(otherMembers);
+                pieces.Add(new PieceState(set.Piece, set.Slots, sourceRoles));
+                pieces.Add(new PieceState(set.Piece, set.Slots, pieceRoles));
+                var candidate = new NetworkState(set.Layout, pieces);
+
+                foreach (INetworkPredicate predicate in predicates)
+                {
+                    if (!predicate.IsValid(candidate))
+                    {
+                        return new GrowOption(face, false, predicate.Describe(), null);
+                    }
+                }
             }
 
             var swapSource = new ExpandableXSwapVariantAction(
@@ -173,6 +206,41 @@ namespace ExpandableX.Core
                 map, executor, pieceDefinition, new GlobalTileTransform(neighbourPos, pieceRotation), configuration: null);
 
             return new GrowOption(face, true, null, new CombinedUndoablePlayerAction(swapSource, placePiece));
+        }
+
+        /// <summary>
+        /// The <see cref="PieceState"/>s of every piece join-connected to <paramref name="source"/> today
+        /// <i>except</i> the source — the part of the building a grow leaves untouched. The connected set is
+        /// read straight from the authoritative network matcher (<see cref="ExpandableSimulationSystem"/>),
+        /// which maintains it via <see cref="JoinNetworkGraph{A,B,C}"/> for every dynamic family (factory or
+        /// not), so the join-adjacency logic is not duplicated here. The source's own (changing) state is
+        /// supplied separately by the caller. Empty only if no network matcher is attached at all (no
+        /// dynamic family registered) — unreachable for a placed dynamic building.
+        /// </summary>
+        private static IReadOnlyList<PieceState> OtherNetworkMembers(ExpandableXRegistry registry, BuildingModel source)
+        {
+            var others = new List<PieceState>();
+            if (registry.NetworkSimulation is not { } system
+                || !system.TryGetNetworkMembers(source.Transform.Position, out IReadOnlyCollection<BuildingInstance>? members))
+            {
+                return others;
+            }
+
+            foreach (BuildingInstance member in members)
+            {
+                // One building per anchor tile, so position identifies the source within the network.
+                if (member.Transform.Position == source.Transform.Position)
+                {
+                    continue;
+                }
+
+                if (registry.VariantsByDefId.TryGetValue(member.Definition.Id.Name, out VariantPlacement? placement))
+                {
+                    others.Add(new PieceState(placement.Set.Piece, placement.Set.Slots, placement.SlotState));
+                }
+            }
+
+            return others;
         }
 
         /// <summary>Resolve a placed building to its network family's variant set + current world-face roles, if it is one.</summary>
