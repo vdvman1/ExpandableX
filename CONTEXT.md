@@ -132,6 +132,10 @@ Using a *dedicated* type — rather than reusing an existing connector type, whi
 Bends and branches are natural: join faces only ever point at occupied same-building tiles, so a building takes whatever connected shape its grows produced.
 _Avoid_: link connector, expand pin, glue connector, join-in, join-out, phantom join connector
 
+**Incidental fusion**:
+When a grow makes a new `Network piece` adjacent to one or more pieces *already in the same network*, the faces they now share become interior and are **fused** — each (on both pieces) becomes a `Join` and any gameplay connector that sat there is dropped — upholding the invariant that an interior face is always a `Join` (see **Role**). Fusion is strictly **intra-network**: it only fuses faces between pieces of the *same* logical building and never merges two separate networks (growing beside a *different* building leaves both as ordinary adjacent buildings). A building's gameplay I/O therefore lives only on its outer faces, and a building never feeds its own output back into its own input internally — **no internal self-feedback**. (Players can still build feedback deliberately with external wires, where it is visible and intentional; the game's signal simulation is also loop-unstable.)
+_Avoid_: merge, weld, auto-join, self-wire, self-feedback connector
+
 **Connector slots as a property of a layout**:
 Each `Layout` declares its own set of `Connector slot`s; each slot's allowed role set follows from its connector type (see **Role**). The painter's single layout declares its paint **junction** slots with roles `{Enabled, Disabled}` — a binary toggle on a bidirectional connector. An AND-gate `DynamicLayout` piece declares its logic-signal slots with the full tri-state set so the player can move the gate's gameplay output between pieces. **There is no slot-only path that bypasses the layout concept** — layouts are the universal unit of registration.
 

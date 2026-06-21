@@ -19,15 +19,17 @@ namespace ExpandableX.Core
     ///
     /// v1 (lean) scope and its known seams:
     /// <list type="bullet">
-    /// <item>Grow only into an <b>empty</b> neighbour tile; the new piece joins <i>only</i> the source (its
-    /// other faces are <see cref="SlotRole.Disabled"/> spacers, never join faces), so nothing fuses here —
-    /// and a grow can never merge two <b>separate</b> networks. <b>Future fusion:</b> when a grow lands a
-    /// piece beside another piece of the <i>same</i> network, the connectors trapped between them are
-    /// inaccessible and should be fused away — which then <b>requires re-checking the network predicates</b>,
-    /// since dropping those slots changes the building's I/O. (Edge case to prototype: if the trapped faces
-    /// are an output meeting an input, the building would feed itself — possibly unwanted, possibly a
-    /// feature.) In this lean version such trapped connectors are just left in place (harmless; the player
-    /// can disable them), and free-branch grows with deliberate side joins are not generated.</item>
+    /// <item>Grow only into an <b>empty</b> neighbour tile. The new piece joins the source on its back face;
+    /// its side/leading faces start as the carried role + <see cref="SlotRole.Disabled"/> spacers.
+    /// <b>Incidental fusion (#4):</b> where the new piece lands beside a piece <i>already in the same
+    /// network</i>, those shared faces fuse to joins on both sides, dropping the now-trapped gameplay
+    /// connectors. The fuse test is <b>same connected component</b> (not merely same family), so a grow can
+    /// <b>never</b> merge two separate networks (a grow beside a different building leaves both as ordinary
+    /// neighbours), and there is <b>no internal self-feedback</b> — an interior face is always a join, never
+    /// a live output→input pair (ADR-0012 amendment 2026-06-21). Fusion changes the building's I/O, so the
+    /// result is re-validated against the network predicates and the grow is gated if invalid. A gap-fill
+    /// grow (the leading face fuses) drops the carried role; the predicate check catches any invalid state.
+    /// Free-branch grows (deliberately growing a side branch) are still not generated.</item>
     /// <item>Grow carries the leading face's gameplay role out to the new end ("pinch and stretch"); the
     /// new piece's side faces default to a <see cref="SlotRole.Disabled"/> spacer. Author-chosen grow
     /// defaults are future work.</item>
@@ -40,7 +42,10 @@ namespace ExpandableX.Core
     /// back onto its neighbour; only that axis role carries (a role manually set on the end's side face
     /// is dropped). Like grow, it re-validates the resulting network against the layout's predicates and
     /// gates the option with the failing reason (issue #7) — the realise-failure path only catches the
-    /// 2-piece case, where the folded neighbour becomes a prunable singleton.</item>
+    /// 2-piece case, where the folded neighbour becomes a prunable singleton. <b>Limitation:</b> once
+    /// incidental fusion gives a piece ≥2 joins (a loop / branch / T / cross), no piece is a single-join
+    /// end, so such shapes can't be shrunk piece-by-piece — only whole-network delete. Accepted for v1,
+    /// tracked in #12.</item>
     /// <item>Drives the HUD's per-face buttons today; these are a stepping stone to drag handles, which
     /// will grow/shrink whole <i>sides</i> rather than one piece/face — that may want a different surface
     /// than the per-face options here.</item>
@@ -61,14 +66,11 @@ namespace ExpandableX.Core
                 return options;
             }
 
-            // Read the building's current network once so each face's grow only re-derives the source +
-            // new piece against it. Null when the layout declares no predicates (nothing to re-validate —
-            // the common case) or the network can't be read (no matcher attached); either way grow is not
-            // gated, exactly as before #7.
-            NetworkCandidate? network = set.Layout.NetworkPredicatesOf().Count > 0
-                && NetworkCandidate.TryReadFrom(registry, building.Transform.Position, out NetworkCandidate? read)
-                    ? read
-                    : null;
+            // Read the building's current network once. Used both to detect incidental fusion (a grow that
+            // lands the new piece beside same-network pieces, #4) and to re-validate the result against the
+            // network predicates (#7). Null only if no matcher is attached (unreachable for a placed dynamic
+            // building) — then the grow neither fuses nor gates, exactly as before.
+            NetworkCandidate.TryReadFrom(registry, building.Transform.Position, out NetworkCandidate? network);
 
             GridRotation rotation = building.Transform.Rotation;
             foreach (TileDirection face in PlanarFaces)
@@ -170,11 +172,6 @@ namespace ExpandableX.Core
                 return new GrowOption(face, false, "tile occupied", null);
             }
 
-            // No fusion guard needed: the new piece joins only the source (its other faces are Disabled
-            // spacers, not joins), so placing it next to a separate network can't merge them — fusion
-            // requires matching join faces on both sides. Incidental fusion would only arise from a
-            // free-branch grow (side joins), which is future work.
-
             // Source: the grown face becomes a Join (it now abuts the new piece).
             var sourceWorld = new Dictionary<TileDirection, SlotRole>(worldFaces) { [face] = SlotRole.Join };
             if (!NetworkPieceRealization.TryRealize(set, sourceWorld, rotation, out string sourceDef, out GridRotation sourceRotation, out var sourceRoles)
@@ -191,23 +188,67 @@ namespace ExpandableX.Core
                 [face.Rotate(GridRotation.RotateCW)] = SlotRole.Disabled,
                 [face.Rotate(GridRotation.RotateCCW)] = SlotRole.Disabled,
             };
+
+            // Incidental fusion (#4): any non-back face of the new piece that abuts a piece already in the
+            // source's network becomes interior — fuse it to a Join on both sides, dropping the neighbour's
+            // now-trapped gameplay connector. The fuse test is same connected component (network.Contains),
+            // never just same family, so a grow can never merge two separate networks; a grow beside a
+            // different building just leaves both as ordinary neighbours. Applied as an overlay after the
+            // pinch-and-stretch carry above, so a gap-fill grow (the leading face landing against a
+            // same-network piece) fuses and drops the carried role — the predicate check below is the safety
+            // net. Each fused neighbour folds its facing face to a Join and rides along as an extra swap.
+            var fusedNeighbours = new List<(BuildingModel Building, IBuildingDefinition Definition, GridRotation Rotation, PieceState State)>();
+            foreach (TileDirection side in PlanarFaces)
+            {
+                if (side == face.Opposite)
+                {
+                    continue; // the back face already joins the source
+                }
+
+                GlobalTileCoordinate adjacentPos = neighbourPos.Move(side);
+                if (network is null
+                    || !map.TryGetBuilding(adjacentPos, out BuildingModel adjacent)
+                    || adjacent.Id == building.Id
+                    || !network.Contains(adjacent.Transform.Position)
+                    || !registry.VariantsByDefId.TryGetValue(adjacent.Definition.Id.Name, out VariantPlacement? adjacentPlacement))
+                {
+                    continue;
+                }
+
+                pieceWorld[side] = SlotRole.Join;
+
+                var adjacentWorld = new Dictionary<TileDirection, SlotRole>(
+                    NetworkPieceRealization.WorldFaceRoles(adjacentPlacement.Set, adjacentPlacement.SlotState, adjacent.Transform.Rotation))
+                {
+                    [side.Opposite] = SlotRole.Join, // the neighbour's face pointing back at the new piece
+                };
+                if (!NetworkPieceRealization.TryRealize(adjacentPlacement.Set, adjacentWorld, adjacent.Transform.Rotation, out string adjacentDef, out GridRotation adjacentRotation, out var adjacentRoles)
+                    || !TryResolveDefinition(registry, adjacentDef, out var adjacentDefinition))
+                {
+                    return new GrowOption(face, false, "no variant for a fused neighbour", null);
+                }
+
+                fusedNeighbours.Add((adjacent, adjacentDefinition, adjacentRotation,
+                    new PieceState(adjacentPlacement.Set.Piece, adjacentPlacement.Set.Slots, adjacentRoles)));
+            }
+
             if (!NetworkPieceRealization.TryRealize(set, pieceWorld, GridRotation.NoRotate, out string pieceDef, out GridRotation pieceRotation, out var pieceRoles)
                 || !TryResolveDefinition(registry, pieceDef, out var pieceDefinition))
             {
                 return new GrowOption(face, false, "no variant for the new piece", null);
             }
 
-            // Re-validate the resulting whole-building network. Pinch-and-stretch keeps role counts
-            // invariant (so the framework's AtLeastN-style predicates always still hold), but a Custom
-            // author predicate has no such guarantee — gate the grow off with its reason if it would now
-            // fail (issue #7). The candidate is the current network with the grown source (its grown face
-            // now a Join) and the new piece placed onto it.
+            // Re-validate the resulting whole-building network (issue #7): the grown source, the new piece,
+            // and any fused neighbours (whose dropped connectors change the building's I/O). Pinch-and-
+            // stretch alone keeps role counts invariant, but fusion does not — so this gate is what stops a
+            // grow that would, say, fuse away the building's last Output.
             if (network is not null)
             {
-                NetworkCandidate grown = network.With(
+                var grown = network.With([
                     NetworkChange.Place(building.Transform.Position, new PieceState(set.Piece, set.Slots, sourceRoles)),
-                    NetworkChange.Place(neighbourPos, new PieceState(set.Piece, set.Slots, pieceRoles))
-                );
+                    NetworkChange.Place(neighbourPos, new PieceState(set.Piece, set.Slots, pieceRoles)),
+                    ..fusedNeighbours.Select(fusedNeighbour => NetworkChange.Place(fusedNeighbour.Building.Transform.Position, fusedNeighbour.State))
+                ]);
 
                 if (grown.FirstViolation() is { } blockedReason)
                 {
@@ -215,14 +256,23 @@ namespace ExpandableX.Core
                 }
             }
 
-            var swapSource = new ExpandableXSwapVariantAction(
-                map, executor, building.Id,
-                new GlobalTileTransform(building.Transform.Position, sourceRotation),
-                building.Configuration, building.Definition, sourceDefinition);
-            var placePiece = new ExpandableXPlaceBuildingAction(
-                map, executor, pieceDefinition, new GlobalTileTransform(neighbourPos, pieceRotation), configuration: null);
+            // One combined undoable action: swap the source, swap each fused neighbour, then place the new
+            // piece. The network re-forms from geometry once the bunch edit settles (ADR-0012).
+            List<IPlayerAction> actions =
+            [
+                new ExpandableXSwapVariantAction(
+                    map, executor, building.Id,
+                    new GlobalTileTransform(building.Transform.Position, sourceRotation),
+                    building.Configuration, building.Definition, sourceDefinition),
+                ..fusedNeighbours.Select(fusedNeighbour => new ExpandableXSwapVariantAction(
+                    map, executor, fusedNeighbour.Building.Id,
+                    new GlobalTileTransform(fusedNeighbour.Building.Transform.Position, fusedNeighbour.Rotation),
+                    fusedNeighbour.Building.Configuration, fusedNeighbour.Building.Definition, fusedNeighbour.Definition)),
+                new ExpandableXPlaceBuildingAction(
+                    map, executor, pieceDefinition, new GlobalTileTransform(neighbourPos, pieceRotation), configuration: null),
+            ];
 
-            return new GrowOption(face, true, null, new CombinedUndoablePlayerAction(swapSource, placePiece));
+            return new GrowOption(face, true, null, new CombinedUndoablePlayerAction(actions));
         }
 
         /// <summary>Resolve a placed building to its network family's variant set + current world-face roles, if it is one.</summary>
