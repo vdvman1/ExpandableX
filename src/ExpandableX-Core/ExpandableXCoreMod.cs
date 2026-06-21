@@ -11,6 +11,7 @@ using ILogger = Core.Logging.ILogger;
 public class ExpandableXCoreMod : IMod
 {
     private readonly Hook _initHook;
+    private readonly ExpandableXNetworkDeleteHook _deleteHook;
 
     public ExpandableXCoreMod(ILogger logger)
     {
@@ -19,6 +20,11 @@ public class ExpandableXCoreMod : IMod
             new ExpandableXSimulationSystemsRewirer(logger, ExpandableXRegistry.Instance));
         GameRewirers.AddRewirer<IBuildingModulesRewirer>(
             new ExpandableXBuildingModulesRewirer(logger, ExpandableXRegistry.Instance));
+
+        // Whole-network delete chokepoint (ADR-0013, issue #9 absorbing #10): deleting any network
+        // member deletes the whole network, across every delete gesture. Installed once at load; it
+        // no-ops until a session populates the matcher and map.
+        _deleteHook = new ExpandableXNetworkDeleteHook(ExpandableXRegistry.Instance, logger);
 
         // Capture the session's PlayerActionManager once per session so slot changes can be
         // dispatched as undoable actions. Init() is the stable, non-version-numbered orchestrator
@@ -43,5 +49,6 @@ public class ExpandableXCoreMod : IMod
     public void Dispose()
     {
         _initHook?.Dispose();
+        _deleteHook?.Dispose();
     }
 }

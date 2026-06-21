@@ -136,6 +136,18 @@ _Avoid_: link connector, expand pin, glue connector, join-in, join-out, phantom 
 When a grow makes a new `Network piece` adjacent to one or more pieces *already in the same network*, the faces they now share become interior and are **fused** — each (on both pieces) becomes a `Join` and any gameplay connector that sat there is dropped — upholding the invariant that an interior face is always a `Join` (see **Role**). Fusion is strictly **intra-network**: it only fuses faces between pieces of the *same* logical building and never merges two separate networks (growing beside a *different* building leaves both as ordinary adjacent buildings). A building's gameplay I/O therefore lives only on its outer faces, and a building never feeds its own output back into its own input internally — **no internal self-feedback**. (Players can still build feedback deliberately with external wires, where it is visible and intentional; the game's signal simulation is also loop-unstable.)
 _Avoid_: merge, weld, auto-join, self-wire, self-feedback connector
 
+**Logical building**:
+The unit the player perceives — and the HUD treats — as a single building. Either an ordinary (non-network) `Building`, or a whole `DynamicLayout` network (all its join-connected `Network piece`s together). Selection, highlight, copy/blueprint, and delete all operate per logical building, not per `Building` entity.
+_Avoid_: logical unit, group, super-building
+
+**Network selection**:
+The rule that a network is selected all-or-nothing: any action that would add one `Network piece` to the player's building selection adds the **whole** network, and any that would remove one removes the **whole** network. The selection can therefore never hold a partial network — the same invariant grow/shrink/fusion already uphold (a network is only ever created or destroyed as a whole — see **Incidental fusion**), carried into selection. Whole-network highlight and copy follow for free because they read the selection.
+_Avoid_: partial selection, member selection, mass selection (the game's own many-buildings gesture — a different concept)
+
+**Focus piece**:
+When the player single-clicks one member of a network, the whole network becomes the selection (one `Logical building`) **and** the clicked member is the *focus piece* — the within-selection target whose `Connector slot` config and grow/shrink the per-building HUD shows. It is the canonical "drill into one piece of the one building" concept (it leads toward, but does not require, `Drag-handle expansion`). A focus piece exists **only** from a single-click into a network, never from a mass/area gesture — those show the many-buildings HUD even when they happen to cover exactly one whole network. Transient, session-only state, never persisted, so it does not touch saves or blueprints and the no-per-instance-ids rule (blueprint stability) is untouched.
+_Avoid_: sub-selection, active piece, sub-building, selected piece
+
 **Connector slots as a property of a layout**:
 Each `Layout` declares its own set of `Connector slot`s; each slot's allowed role set follows from its connector type (see **Role**). The painter's single layout declares its paint **junction** slots with roles `{Enabled, Disabled}` — a binary toggle on a bidirectional connector. An AND-gate `DynamicLayout` piece declares its logic-signal slots with the full tri-state set so the player can move the gate's gameplay output between pieces. **There is no slot-only path that bypasses the layout concept** — layouts are the universal unit of registration.
 
