@@ -85,6 +85,9 @@ namespace ExpandableX.Core
             return true;
         }
 
+        /// <summary>Whether a piece anchored at <paramref name="anchor"/> is a member of this network — the intra-network test incidental fusion uses to decide what may fuse.</summary>
+        public bool Contains(in GlobalTileCoordinate anchor) => _pieces.ContainsKey(anchor);
+
         /// <summary>A fresh copy with the given piece edits applied; this instance is unchanged.</summary>
         public NetworkCandidate With(params IEnumerable<NetworkChange> changes)
         {
