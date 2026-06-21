@@ -16,6 +16,14 @@ namespace ExpandableX.Core
         /// <summary>The local player, captured alongside <see cref="PlayerActions"/> (needed to author actions).</summary>
         public Player LocalPlayer { get; internal set; }
 
+        /// <summary>
+        /// The session's shared network matcher, set when at least one <see cref="Layout.Dynamic"/> family
+        /// supplies a simulation factory. It is the authoritative source of network membership (the
+        /// connected components of join-adjacent pieces), which grow/shrink re-validation queries rather
+        /// than re-deriving the graph. Null when no network-model family is simulated.
+        /// </summary>
+        internal ExpandableSimulationSystem? NetworkSimulation { get; set; }
+
         private readonly ILogger _logger;
         private readonly Dictionary<string, Registration> _registrations = new Dictionary<string, Registration>();
         private readonly Dictionary<string, VariantPlacement> _variantsByDefId = new Dictionary<string, VariantPlacement>();

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Core.Events;
 using Core.Events.Logging;
@@ -56,7 +57,13 @@ namespace ExpandableX.Core
 
         // Committed graph members → the data we need to maintain the tile index and rebuild nodes.
         private readonly Dictionary<BuildingInstance, MemberRecord> _committed = new();
-        // Every occupied tile of every network → that network's node (the tile-simulation lookup).
+        // Every occupied tile → the member occupying it (the membership lookup, maintained for every
+        // tracked family — including network families without a simulation factory). Independent of the
+        // node index below: a member's tiles don't change as its network re-forms, so this is touched only
+        // when a member is added/removed, not on every re-networking.
+        private readonly Dictionary<GlobalTileCoordinate, BuildingInstance> _memberByTile = new();
+        // Every occupied tile of every *simulated* network → that network's node (the tile-simulation
+        // lookup). Only populated for families that supply a factory.
         private readonly Dictionary<GlobalTileCoordinate, IExpandableSimulation> _byTile = new();
         // Member → its network's node.
         private readonly Dictionary<BuildingInstance, IExpandableSimulation> _nodeByMember = new();
@@ -125,6 +132,26 @@ namespace ExpandableX.Core
             return false;
         }
 
+        /// <summary>
+        /// The member buildings of the network occupying <paramref name="position"/>, if one is tracked
+        /// here. This is the authoritative, already-computed membership (the connected component
+        /// <see cref="JoinNetworkGraph{A,B,C}"/> maintains) — grow/shrink re-validation reads it instead of
+        /// re-deriving the network, so the join-adjacency logic lives in exactly one place. Available for
+        /// every tracked <see cref="Layout.Dynamic"/> family, including those without a simulation factory
+        /// (membership is tracked even when no node is built).
+        /// </summary>
+        public bool TryGetNetworkMembers(in GlobalTileCoordinate position, [NotNullWhen(true)] out IReadOnlyCollection<BuildingInstance>? members)
+        {
+            if (_memberByTile.TryGetValue(position, out BuildingInstance member)
+                && _graph.TryGetNetwork(member, out members))
+            {
+                return true;
+            }
+
+            members = null;
+            return false;
+        }
+
         public void StartBunchEdit()
         {
             _inBunch = true;
@@ -185,21 +212,24 @@ namespace ExpandableX.Core
                 return false;
             }
 
-            // Membership is by catalog + factory, NOT by the presence of a join connector: a 0-join
-            // building (a configurable singleton, or a non-network family like the painter) is still a
-            // member — it forms its own one-member component (JoinNetworkGraph handles a face-less
-            // member as a singleton component). This is what lets one author-supplied factory serve the
-            // standalone building and the multi-piece network through the same system (ADR-0012).
-            if (!_registry.VariantsByDefId.TryGetValue(building.Definition.Id.Name, out VariantPlacement? placement))
+            // Membership is by catalog + network-model layout, NOT by the presence of a join connector: a
+            // 0-join building (a configurable singleton of a network family) is still a member — it forms
+            // its own one-member component (JoinNetworkGraph handles a face-less member as a singleton
+            // component). This is what lets one author-supplied factory serve the standalone building and
+            // the multi-piece network through the same system (ADR-0012).
+            //
+            // We track every Layout.Dynamic family's graph, whether or not it supplies a simulation
+            // factory: membership is what grow/shrink re-validation reads (issue #7), so a factory-less
+            // network must still be grouped. The factory only gates whether Build() additionally creates a
+            // runtime simulation node. Static families are simulated per-definition elsewhere and are not
+            // tracked here.
+            if (!_registry.VariantsByDefId.TryGetValue(building.Definition.Id.Name, out VariantPlacement? placement)
+                || placement.Set.Layout is not Layout.Dynamic)
             {
                 return false;
             }
 
             string family = placement.Set.Layout.LayoutId;
-            if (!_factories.ContainsKey(family))
-            {
-                return false;
-            }
 
             // Don't double-simulate a def the game already simulates: an override target reuses a
             // pre-existing, separately-simulated def. (Synthesised variants and an author's own base are
@@ -254,14 +284,26 @@ namespace ExpandableX.Core
                 TearDown(dissolved);
             }
 
-            // 2. Reconcile committed members: drop removed (tiles already cleared above), add new.
+            // 2. Reconcile committed members: drop removed (node tiles already cleared above), add new.
+            //    The member→tile index tracks every member regardless of simulation, so maintain it here.
             foreach (BuildingInstance building in removes)
             {
+                if (_committed.TryGetValue(building, out MemberRecord record))
+                {
+                    foreach (GlobalTileCoordinate tile in record.Tiles)
+                    {
+                        _memberByTile.Remove(tile);
+                    }
+                }
                 _committed.Remove(building);
             }
             foreach (PendingMember add in adds)
             {
                 _committed[add.Member.Id] = new MemberRecord(add.Member.Family, add.Tiles);
+                foreach (GlobalTileCoordinate tile in add.Tiles)
+                {
+                    _memberByTile[tile] = add.Member.Id;
+                }
             }
 
             // 3. Build a fresh simulation for each network that (re)formed.
@@ -301,7 +343,13 @@ namespace ExpandableX.Core
         {
             BuildingInstance first = network.First();
             MemberRecord seed = _committed[first];
-            ExpandableSimulationFactory createSimulation = _factories[seed.Family];
+
+            // A network family without a simulation factory is tracked for membership only (its graph is
+            // maintained above; grow/shrink re-validation still reads it). There is no node to build.
+            if (!_factories.TryGetValue(seed.Family, out ExpandableSimulationFactory? createSimulation))
+            {
+                return;
+            }
 
             // Compute the network footprint once: distinct buildings occupy distinct tiles, so the
             // union is a plain concatenation. This single set feeds both the node (its

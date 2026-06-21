@@ -21,5 +21,26 @@ namespace ExpandableX.Core
     /// </summary>
     public sealed record NetworkState(
         Layout Layout,
-        IReadOnlyList<PieceState> Pieces);
+        IReadOnlyList<PieceState> Pieces)
+    {
+        /// <summary>
+        /// The <see cref="INetworkPredicate.Describe"/> text of the first of the layout's network
+        /// predicates this state violates, or null if the building is valid (all hold, or there are none).
+        /// The shared validity check for any modification that could leave a network invalid — grow
+        /// re-validation and slot-config changes both gate on it (a non-null result is the blocked reason
+        /// shown on the disabled button).
+        /// </summary>
+        public string? FirstPredicateViolation()
+        {
+            foreach (INetworkPredicate predicate in Layout.NetworkPredicatesOf())
+            {
+                if (!predicate.IsValid(this))
+                {
+                    return predicate.Describe();
+                }
+            }
+
+            return null;
+        }
+    }
 }
