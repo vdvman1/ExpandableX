@@ -46,6 +46,20 @@ namespace ExpandableX.Core
             }
 
             PieceVariantSet set = placement.Set;
+
+            // For a network (Dynamic) piece, a per-piece slot-role change can still leave the *whole
+            // building* invalid: every combo is generated for network pieces (validity is resolved across
+            // the network, not per piece — ADR-0012), so the variant exists and a plain reachability check
+            // passes. Re-validate each candidate change against the layout's network predicates and gate it
+            // like an unreachable option. Read the network once here. Null for a static/singleton layout or
+            // a layout with no predicates — there the absent variants already prevent invalid states, so no
+            // cross-piece check is needed.
+            NetworkCandidate? network =
+                set.Layout.NetworkPredicatesOf().Count > 0
+                && NetworkCandidate.TryReadFrom(_registry, building.Transform.Position, out NetworkCandidate? read)
+                    ? read
+                    : null;
+
             foreach (ConnectorSlot slot in set.Slots)
             {
                 SlotRole currentRole = placement.SlotState[slot.Id];
@@ -77,9 +91,23 @@ namespace ExpandableX.Core
                     bool reachable = TryResolveSlotChange(
                         set, placement, building, slot, role, out string targetDef, out GridRotation targetRotation);
                     bool isCurrent = role == currentRole;
-                    // A role is selectable only if it's reachable and not already current; otherwise the
-                    // button is shown but disabled (ActiveIf=false) so the player sees the option exists.
-                    bool selectable = reachable && !isCurrent;
+
+                    // A reachable, non-current change on a network piece must also not break the building's
+                    // network predicates. blockedReason is the failing predicate's text (null if it holds).
+                    string? blockedReason = null;
+                    if (reachable && !isCurrent && network is not null)
+                    {
+                        blockedReason = network
+                            .With(NetworkChange.Place(
+                                building.Transform.Position,
+                                new PieceState(set.Piece, set.Slots, WithRole(placement.SlotState, slot.Id, role))))
+                            .FirstViolation();
+                    }
+
+                    // A role is selectable only if it's reachable, not already current, and wouldn't leave
+                    // the network invalid; otherwise the button is shown but disabled (ActiveIf=false) so
+                    // the player sees the option exists and, when blocked, why.
+                    bool selectable = reachable && !isCurrent && blockedReason is null;
 
                     // The closures below run later (button click / each frame). It's safe to capture
                     // map/building/currentDefName and the per-iteration loop locals directly: foreach
@@ -87,7 +115,10 @@ namespace ExpandableX.Core
                     // reassigned — no defensive per-iteration copies are needed.
                     buttons.Add(new PlacementKeybindingHintData
                     {
-                        OverrideTitle = new RawText(isCurrent ? $"{role} (current)" : role.ToString()),
+                        OverrideTitle = new RawText(
+                            isCurrent ? $"{role} (current)"
+                            : blockedReason is not null ? $"{role} — {blockedReason}"
+                            : role.ToString()),
                         ActiveIf = () => selectable,
                         Handler = () =>
                         {
