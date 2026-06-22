@@ -8,8 +8,13 @@ namespace ExpandableX.Core
     /// <summary>One growable face of a placed network piece: grow outward (place a joined neighbour) in this direction.</summary>
     public sealed record GrowOption(TileDirection Face, bool Available, string? BlockedReason, IPlayerAction? Action);
 
-    /// <summary>Removing this end piece, folding its leading connector back onto its neighbour (reverse pinch-and-stretch).</summary>
-    public sealed record ShrinkOption(bool Available, string? BlockedReason, IPlayerAction? Action);
+    /// <summary>
+    /// Removing this end piece, folding its leading connector back onto its neighbour (reverse
+    /// pinch-and-stretch). <see cref="FocusAfter"/> is the surviving neighbour the role folds onto — the
+    /// piece focus should move to once the shrink settles (the removed end was the focus), so configuring
+    /// continues on the remaining network instead of dropping to the many-buildings panel.
+    /// </summary>
+    public sealed record ShrinkOption(bool Available, string? BlockedReason, IPlayerAction? Action, BuildingId FocusAfter = default);
 
     /// <summary>
     /// Computes directed grow/shrink moves for a placed <see cref="Layout.Dynamic"/> piece and builds the
@@ -158,7 +163,7 @@ namespace ExpandableX.Core
                 new GlobalTileTransform(neighbour.Transform.Position, neighbourNewRotation),
                 neighbour.Configuration, neighbour.Definition, neighbourDefinition);
 
-            return new ShrinkOption(true, null, new CombinedUndoablePlayerAction(remove, swapNeighbour));
+            return new ShrinkOption(true, null, new CombinedUndoablePlayerAction(remove, swapNeighbour), neighbour.Id);
         }
 
         private static GrowOption BuildGrowOption(

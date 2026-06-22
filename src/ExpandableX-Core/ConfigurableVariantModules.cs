@@ -215,9 +215,12 @@ namespace ExpandableX.Core
                             ActiveIf = () => shrinkEnabled,
                             Handler = () =>
                             {
-                                if (shrinkEnabled && shrinkAction != null)
+                                if (shrinkEnabled && shrinkAction != null && playerActions.TryScheduleAction(shrinkAction))
                                 {
-                                    playerActions.TryScheduleAction(shrinkAction);
+                                    // Move focus to the surviving neighbour once the shrink settles, so
+                                    // configuring continues on the remaining network (the removed end was
+                                    // the focus). Applied by the selection manager on the membership change.
+                                    _registry.NetworkSelection?.RequestFocusAfterChange(shrink.FocusAfter);
                                 }
                             },
                         },
