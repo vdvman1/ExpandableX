@@ -126,7 +126,7 @@ namespace ExpandableX.Core
                 // player-initiated deletes pull in their network. This is also what makes redo idempotent.
                 if (payload.ForceAllowDelete
                     || !map.TryGetBuilding(in payload.BuildingId, out BuildingModel anchor)
-                    || NetworkMembers(anchor.Transform.Position, map) is not { } members)
+                    || NetworkMembership.Of(_registry, anchor.Transform.Position, map) is not { } members)
                 {
                     continue;
                 }
@@ -165,7 +165,7 @@ namespace ExpandableX.Core
             bool grew = false;
             foreach (BuildingModel building in entries)
             {
-                if (NetworkMembers(building.Transform.Position, map) is not { } members)
+                if (NetworkMembership.Of(_registry, building.Transform.Position, map) is not { } members)
                 {
                     continue;
                 }
@@ -180,32 +180,6 @@ namespace ExpandableX.Core
             }
 
             return grew ? [.. result.Values] : entries;
-        }
-
-        /// <summary>
-        /// The <see cref="BuildingModel"/>s of the network the building at <paramref name="anchorPosition"/>
-        /// belongs to (including it), or <c>null</c> when no matcher is attached or it isn't part of a
-        /// tracked multi-member network.
-        /// </summary>
-        private IReadOnlyCollection<BuildingModel>? NetworkMembers(in GlobalTileCoordinate anchorPosition, IMapModel map)
-        {
-            if (_registry.NetworkSimulation is not { } simulation
-                || !simulation.TryGetNetworkMembers(anchorPosition, out IReadOnlyCollection<BuildingInstance>? members)
-                || members.Count <= 1)
-            {
-                return null;
-            }
-
-            var models = new List<BuildingModel>(members.Count);
-            foreach (BuildingInstance member in members)
-            {
-                if (map.TryGetBuilding(member.Transform.Position, out BuildingModel model))
-                {
-                    models.Add(model);
-                }
-            }
-
-            return models;
         }
     }
 }

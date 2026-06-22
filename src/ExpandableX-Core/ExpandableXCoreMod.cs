@@ -12,6 +12,7 @@ public class ExpandableXCoreMod : IMod
 {
     private readonly Hook _initHook;
     private readonly ExpandableXNetworkDeleteHook _deleteHook;
+    private ExpandableXNetworkSelection? _selection;
 
     public ExpandableXCoreMod(ILogger logger)
     {
@@ -41,6 +42,21 @@ public class ExpandableXCoreMod : IMod
                 {
                     ExpandableXRegistry.Instance.PlayerActions = orchestrator.PlayerActions;
                     ExpandableXRegistry.Instance.LocalPlayer = orchestrator.LocalPlayer;
+
+                    // Keep networks atomic in the building selection and track the focus piece for this
+                    // session (ADR-0013). Re-created per session; the old one unsubscribes on dispose.
+                    // Guarded because this runs on the session-init critical path: a throw here would
+                    // fault loading and freeze the game, so it fails open (no atomic selection) instead.
+                    try
+                    {
+                        _selection?.Dispose();
+                        _selection = new ExpandableXNetworkSelection(
+                            ExpandableXRegistry.Instance, orchestrator.LocalPlayer, logger);
+                    }
+                    catch (System.Exception e)
+                    {
+                        logger.Info.Log($"ExpandableX-Core: network selection manager init failed: {e}");
+                    }
                 }
             });
 
@@ -50,5 +66,6 @@ public class ExpandableXCoreMod : IMod
     {
         _initHook?.Dispose();
         _deleteHook?.Dispose();
+        _selection?.Dispose();
     }
 }
