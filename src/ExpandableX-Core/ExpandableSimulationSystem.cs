@@ -55,6 +55,14 @@ namespace ExpandableX.Core
         private readonly MultiRegisterEvent<IConnectableSimulation> _onBeforeSimulationDestroyed = new();
         private readonly HashSet<IConnectableSimulation> _simulations = new();
 
+        /// <summary>
+        /// Raised once after any membership change has been applied (a grow/shrink/fusion/paste/load
+        /// re-network), so a listener that mirrors membership can re-sync. The whole-network selection uses
+        /// it to pull a grow's new piece — placed on the map but not added to the selection — into the
+        /// selection, since a grow changes membership without firing a selection event.
+        /// </summary>
+        public event Action? NetworksChanged;
+
         // Committed graph members → the data we need to maintain the tile index and rebuild nodes.
         private readonly Dictionary<BuildingInstance, MemberRecord> _committed = new();
         // Every occupied tile → the member occupying it (the membership lookup, maintained for every
@@ -311,6 +319,9 @@ namespace ExpandableX.Core
             {
                 Build(formed);
             }
+
+            // Membership is now settled for this batch; let listeners (whole-network selection) re-sync.
+            NetworksChanged?.Invoke();
         }
 
         private void TearDown(IReadOnlyCollection<BuildingInstance> network)

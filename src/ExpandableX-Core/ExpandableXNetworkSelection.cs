@@ -38,10 +38,12 @@ namespace ExpandableX.Core
         private readonly ExpandableXRegistry _registry;
         private readonly Player _player;
         private readonly ISelection<BuildingModel> _selection;
+        private readonly ExpandableSimulationSystem? _simulation;
         private readonly ILogger _logger;
 
         private bool _reconciling;
         private BuildingId? _focus;
+        private BuildingId? _pendingFocus;
 
         public ExpandableXNetworkSelection(ExpandableXRegistry registry, Player player, ILogger logger)
         {
@@ -51,6 +53,12 @@ namespace ExpandableX.Core
             _selection = player.InteractionState.BuildingSelection;
             _selection.OnAdded.Register(OnAdded);
             _selection.OnRemoved.Register(OnRemoved);
+
+            // A grow places a new piece and keeps the focus piece selected, but never touches the selection
+            // set — so no OnAdded fires for the new piece. Re-sync off the matcher's membership-change event
+            // instead, which fires whenever a grow/shrink/fusion re-networks.
+            _simulation = registry.NetworkSimulation;
+            _simulation?.NetworksChanged += OnNetworksChanged;
         }
 
         public void Dispose()
@@ -60,6 +68,7 @@ namespace ExpandableX.Core
             // throwing Unregister would fault session init and freeze loading. TryUnregister is a no-op then.
             _selection.OnAdded.TryUnregister(OnAdded);
             _selection.OnRemoved.TryUnregister(OnRemoved);
+            _simulation?.NetworksChanged -= OnNetworksChanged;
         }
 
         /// <summary>
@@ -89,6 +98,13 @@ namespace ExpandableX.Core
             return true;
         }
 
+        /// <summary>
+        /// Request that focus move to <paramref name="id"/> once the next membership change settles — used
+        /// by shrink to keep focus on the surviving neighbour (the removed end was the focus). Explicit, so
+        /// the post-shrink focus is a stated intent rather than an accident of the panel-refresh swap.
+        /// </summary>
+        public void RequestFocusAfterChange(BuildingId id) => _pendingFocus = id;
+
         private void OnAdded(IReadOnlyCollection<BuildingModel> added) => Reconcile(added, adding: true);
 
         private void OnRemoved(IReadOnlyCollection<BuildingModel> removed) => Reconcile(removed, adding: false);
@@ -104,6 +120,15 @@ namespace ExpandableX.Core
 
             try
             {
+                // Drop a stale focus once it leaves the selection (deselect / clear / shrinking the focused
+                // piece), so a later mass selection that happens to equal its network doesn't inherit it.
+                // The single-click branch below re-sets focus when appropriate.
+                if (_focus is { } prev
+                    && (!map.TryGetBuilding(in prev, out BuildingModel prevModel) || !_selection.Contains(prevModel)))
+                {
+                    _focus = null;
+                }
+
                 // Single-click (or re-click) into a network: the selection collapsed to exactly one
                 // building. Focus it and pull the whole network back in.
                 if (_selection.Count == 1)
@@ -158,6 +183,77 @@ namespace ExpandableX.Core
             catch (Exception e)
             {
                 _logger.Info.Log($"ExpandableX-Core: network selection reconcile failed: {e}");
+            }
+        }
+
+        /// <summary>
+        /// Membership changed (a grow/shrink/fusion re-networked). If the focus piece is still selected,
+        /// re-expand its network into the selection so a grow's new piece — placed but never added to the
+        /// selection — joins it, keeping the network whole. The focus piece survives a grow because the
+        /// variant swap keeps its <see cref="BuildingId"/>. A removal (shrink) drops its piece from the
+        /// selection through the action's own upkeep, so this only ever needs to add.
+        /// </summary>
+        private void OnNetworksChanged()
+        {
+            if (_reconciling
+                || _player.InteractionState.State != PlayerInteractionState.BuildingsIdle
+                || _registry.LocalPlayer?.CurrentMap is not { } map)
+            {
+                return;
+            }
+
+            try
+            {
+                // Apply an explicitly-requested focus move (shrink → the surviving neighbour the removed end
+                // folded onto). Consumed on the first settle after the request; only takes effect if that
+                // piece is still a selected network member.
+                if (_pendingFocus is { } pending)
+                {
+                    _pendingFocus = null;
+                    if (map.TryGetBuilding(in pending, out BuildingModel pendingModel)
+                        && _selection.Contains(pendingModel)
+                        && NetworkMembership.Of(_registry, pendingModel.Transform.Position, map) is not null)
+                    {
+                        _focus = pending;
+                    }
+                }
+
+                // Grow from a singleton: a standalone building (0-join, not a network member, so never
+                // focused) has just become a network because the player grew it. There's no prior focus to
+                // re-sync from, so adopt that one selected building as the focus origin — matching the
+                // grow-from-network case, where the existing focus is kept.
+                if (_focus is null
+                    && _selection.Count == 1
+                    && NetworkMembership.Of(_registry, _selection.First().Transform.Position, map) is not null)
+                {
+                    _focus = _selection.First().Id;
+                }
+
+                if (_focus is not { } id
+                    || !map.TryGetBuilding(in id, out BuildingModel focus)
+                    || !_selection.Contains(focus)
+                    || NetworkMembership.Of(_registry, focus.Transform.Position, map) is not { } members)
+                {
+                    return;
+                }
+
+                List<BuildingModel>? toAdd = null;
+                foreach (BuildingModel member in members)
+                {
+                    if (!_selection.Contains(member))
+                    {
+                        (toAdd ??= []).Add(member);
+                    }
+                }
+
+                if (toAdd is not null)
+                {
+                    Run(() => _selection.Add(toAdd));
+                }
+            }
+            catch (Exception e)
+            {
+                _logger.Info.Log($"ExpandableX-Core: network selection re-sync failed: {e}");
             }
         }
 

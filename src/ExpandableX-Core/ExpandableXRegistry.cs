@@ -24,6 +24,13 @@ namespace ExpandableX.Core
         /// </summary>
         internal ExpandableSimulationSystem? NetworkSimulation { get; set; }
 
+        /// <summary>
+        /// The current session's atomic-selection / focus-piece manager (ADR-0013), captured so the HUD
+        /// panel-gating detours can read the focus piece. Re-created per session; null outside a session,
+        /// in which case those detours are inert.
+        /// </summary>
+        internal ExpandableXNetworkSelection? NetworkSelection { get; set; }
+
         private readonly ILogger _logger;
         private readonly Dictionary<string, Registration> _registrations = new Dictionary<string, Registration>();
         private readonly Dictionary<string, VariantPlacement> _variantsByDefId = new Dictionary<string, VariantPlacement>();
