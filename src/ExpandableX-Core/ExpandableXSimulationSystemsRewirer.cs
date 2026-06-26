@@ -1,3 +1,4 @@
+using Game.Core.Content.Buildings;
 using ShapezShifter.Hijack;
 using System.Collections.Generic;
 using System.Linq;
@@ -500,7 +501,6 @@ namespace ExpandableX.Core
                 showStatBuildingsPerFullBelt: sourceGroup.ShowStatBuildingsPerFullBelt,
                 showInSpeedOverview: sourceGroup.ShowInSpeedOverview,
                 showAsResearchReward: false,
-                requireStoreContentId: sourceGroup.RequiredStoreContentId,
                 linkedWikiEntry: sourceGroup.LinkedWikiEntry,
                 placementIndicatorTypes: sourceGroup.PlacementIndicatorTypes,
                 placementRequirements: sourceGroup.PlacementRequirements,

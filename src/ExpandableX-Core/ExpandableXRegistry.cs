@@ -17,6 +17,15 @@ namespace ExpandableX.Core
         public Player LocalPlayer { get; internal set; }
 
         /// <summary>
+        /// The session's placed-building map, resolved from the DI container at session init so the
+        /// drag-handle draw hook (issue #5) can compute expansion handles off-frame from the selection
+        /// (the HUD module path receives the map as a parameter, but the world-space draw hook has no such
+        /// parameter). Null until a session has started, or if the container doesn't expose it — the hook
+        /// then simply draws no handles (fail-open).
+        /// </summary>
+        public IMapModel Map { get; internal set; }
+
+        /// <summary>
         /// The session's shared network matcher, set when at least one <see cref="Layout.Dynamic"/> family
         /// supplies a simulation factory. It is the authoritative source of network membership (the
         /// connected components of join-adjacent pieces), which grow/shrink re-validation queries rather

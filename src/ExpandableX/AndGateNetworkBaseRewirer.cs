@@ -31,7 +31,7 @@ namespace ExpandableX
         public AndGateNetworkBaseRewirer(ILogger logger) => _logger = logger;
 
         public GameBuildings ModifyGameBuildings(
-            MetaGameModeBuildings meta,
+            AuthoringBuildings meta,
             GameBuildings gameBuildings,
             IMeshCache meshCache,
             VisualThemeBaseResources theme)
