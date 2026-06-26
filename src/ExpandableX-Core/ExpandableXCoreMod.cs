@@ -15,6 +15,7 @@ public class ExpandableXCoreMod : IMod
     private readonly ExpandableXNetworkDeleteHook _deleteHook;
     private readonly ExpandableXNetworkHudHook _hudHook;
     private readonly ExpandableXFocusHighlightHook _focusHighlightHook;
+    private readonly ExpandableXExpansionHandleHook _expansionHandleHook;
     private ExpandableXNetworkSelection? _selection;
 
     public ExpandableXCoreMod(ILogger logger)
@@ -37,6 +38,9 @@ public class ExpandableXCoreMod : IMod
 
         // Colour the focus piece distinctly on top of the network's blue selection highlight (ADR-0013).
         _focusHighlightHook = new ExpandableXFocusHighlightHook(ExpandableXRegistry.Instance, logger);
+
+        // Draw the drag handles on the selected logical building's growable/shrinkable faces (#5, ADR-0014).
+        _expansionHandleHook = new ExpandableXExpansionHandleHook(ExpandableXRegistry.Instance, logger);
 
         // Capture the session's managers once per session. They live only on the GameSessionOrchestrator's
         // per-session DI container, which the game populates as the session loads; the game exposes no
@@ -109,6 +113,7 @@ public class ExpandableXCoreMod : IMod
         _deleteHook?.Dispose();
         _hudHook?.Dispose();
         _focusHighlightHook?.Dispose();
+        _expansionHandleHook?.Dispose();
         _selection?.Dispose();
     }
 }

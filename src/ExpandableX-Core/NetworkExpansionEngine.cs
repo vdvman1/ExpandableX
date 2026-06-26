@@ -17,6 +17,27 @@ namespace ExpandableX.Core
     public sealed record ShrinkOption(bool Available, string? BlockedReason, IPlayerAction? Action, BuildingId FocusAfter = default);
 
     /// <summary>
+    /// The result of forward-simulating a multi-tile grow along one face (the basis for drag-handle
+    /// expansion, issue #5 / ADR-0014): how many tiles can actually be added — <see cref="Tiles"/>,
+    /// clamped at the first blocked cell, 0 if not even one fits — the single combined undoable action
+    /// that adds exactly that many (null when <see cref="Tiles"/> is 0), and <see cref="BlockedReason"/>,
+    /// the reason the chain stopped short of the request (null when the full request was satisfied or it
+    /// simply ran out of empty space without an error). A drag previews <see cref="Tiles"/> ghost pieces
+    /// and surfaces <see cref="BlockedReason"/> at the clamp.
+    /// </summary>
+    public sealed record GrowChainResult(int Tiles, IPlayerAction? Action, string? BlockedReason);
+
+    /// <summary>
+    /// The result of forward-simulating a multi-tile inward shrink from a removable end (the inward-drag
+    /// mirror of <see cref="GrowChainResult"/>, issue #5 / ADR-0014): how many end pieces can actually be
+    /// removed — <see cref="Tiles"/>, clamped, 0 if none — the single combined undoable action that removes
+    /// exactly that many and folds the grabbed end's leading role onto the survivor, <see cref="BlockedReason"/>
+    /// (the predicate/realisation reason a longer shrink was refused, null when it simply ran out of spine),
+    /// and <see cref="FocusAfter"/>, the surviving piece the focus should move to once the shrink settles.
+    /// </summary>
+    public sealed record ShrinkChainResult(int Tiles, IPlayerAction? Action, string? BlockedReason, BuildingId FocusAfter = default);
+
+    /// <summary>
     /// Computes directed grow/shrink moves for a placed <see cref="Layout.Dynamic"/> piece and builds the
     /// undoable actions that perform them (sibling to <see cref="SequenceEngine"/>, for network layouts).
     /// Grow/shrink are id-as-truth definition swaps plus a placement/removal; the network re-forms from
@@ -58,6 +79,10 @@ namespace ExpandableX.Core
     /// </summary>
     internal static class NetworkExpansionEngine
     {
+        // NOTE(refactor, post-#5): the single-tile path (GrowOptionsFor/BuildGrowOption, ShrinkOptionFor)
+        // and the multi-tile chain path (GrowChainFor/ShrinkChainFor) repeat the same realise → fuse →
+        // predicate-validate shape at two granularities — single-tile is just a chain of length 1. They can
+        // likely converge once the drag UI lands; kept separate for now to avoid churn mid-feature.
         private static readonly TileDirection[] PlanarFaces =
             { TileDirection.East, TileDirection.South, TileDirection.West, TileDirection.North };
 
@@ -164,6 +189,369 @@ namespace ExpandableX.Core
                 neighbour.Configuration, neighbour.Definition, neighbourDefinition);
 
             return new ShrinkOption(true, null, new CombinedUndoablePlayerAction(remove, swapNeighbour), neighbour.Id);
+        }
+
+        /// <summary>
+        /// Forward-simulate growing <paramref name="building"/> outward along <paramref name="face"/> by up
+        /// to <paramref name="maxTiles"/> tiles — the multi-tile-per-drag basis for drag handles (ADR-0014).
+        /// The chain is a straight pinch-and-stretch run: the source's grown face becomes a Join, each new
+        /// piece joins the one behind it (sides are <see cref="SlotRole.Disabled"/> spacers), and the
+        /// carried gameplay role rides out to the final end piece. The walk stops at the first occupied tile
+        /// (or a piece that can't be realised), then shrinks the count until the whole-building result
+        /// satisfies the network predicates — so the returned <see cref="GrowChainResult.Tiles"/> is always
+        /// a valid grow.
+        ///
+        /// v1 first cut and its seams (matching <see cref="BuildGrowOption"/>'s single-tile scope):
+        /// <list type="bullet">
+        /// <item><b>Incidental fusion within the chain is not yet applied</b> (#4 is handled per-tile by the
+        /// single-tile path). A chain extends only into empty tiles, so the common "extend a line into open
+        /// space" case is exact; a chain dragged alongside an existing same-network arm would not fuse the
+        /// touching faces — layered in a follow-up before the drag UI can trigger it.</item>
+        /// <item><b>Grow-through same-network tiles is not yet supported.</b> The chain stops at any occupied
+        /// tile, so it can neither gap-fill (fuse into a same-network piece it runs into) nor pass *through*
+        /// same-network pieces to continue beyond them. The target behaviour treats a same-network tile as
+        /// passable when the final result stays valid, and only a *foreign* building as a hard stop — a
+        /// later step of this drag-handle work (#5), not a separate change.</item>
+        /// <item><b>ShapeLimit is not gated here</b> — neither does the single-tile path; the v1 AND gate is
+        /// <see cref="ShapeLimits.Free"/>. Wire alongside the Line/Rectangle limits (#27).</item>
+        /// </list>
+        /// </summary>
+        public static GrowChainResult GrowChainFor(
+            IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel building,
+            TileDirection face, int maxTiles)
+        {
+            if (maxTiles <= 0 || !TryResolveNetworkPiece(registry, building, out var set, out var worldFaces))
+            {
+                return new GrowChainResult(0, null, null);
+            }
+
+            // Only a face that currently carries a gameplay/disabled role can grow; a Join already abuts a
+            // same-building neighbour, and a face with no slot has no connector to carry out.
+            if (!worldFaces.TryGetValue(face, out SlotRole carriedRole) || carriedRole == SlotRole.Join)
+            {
+                return new GrowChainResult(0, null, "cannot grow from this face");
+            }
+
+            NetworkCandidate.TryReadFrom(registry, building.Transform.Position, out NetworkCandidate? network);
+            GridRotation rotation = building.Transform.Rotation;
+
+            // How far can the straight chain reach? Walk outward, stopping at the first occupied tile. v1
+            // takes only empty tiles. TODO(grow-through, this PR — see #5 acceptance criteria): a
+            // same-network tile in the path should be *passable* — drag through it and keep going (fusing
+            // the touched faces) as long as the final result stays valid — whereas a *different* building
+            // remains a hard stop. So "any occupied tile ends the chain" is a v1 simplification, not the
+            // target behaviour; only foreign-building occupancy is a true stop.
+            var positions = new List<GlobalTileCoordinate>(maxTiles);
+            GlobalTileCoordinate pos = building.Transform.Position;
+            string? clampReason = null;
+            for (int k = 0; k < maxTiles; k++)
+            {
+                pos = pos.Move(face);
+                if (map.TryGetBuilding(pos, out _))
+                {
+                    // Only the very first tile being occupied is an actual error to report; clamping farther
+                    // out is just "grew as far as the space allowed".
+                    clampReason = k == 0 ? "tile occupied" : null;
+                    break;
+                }
+
+                positions.Add(pos);
+            }
+
+            // Take the largest reachable count whose realised whole-building result still satisfies the
+            // network predicates. Pure pinch-and-stretch is role-count-invariant, so AtLeastN-style
+            // predicates always hold; a Custom predicate might not, so shrink the count until it validates.
+            for (int count = positions.Count; count >= 1; count--)
+            {
+                if (TryBuildChainAction(
+                        map, executor, registry, set, building, worldFaces, rotation, face, carriedRole,
+                        positions, count, network, out IPlayerAction? action, out string? reason))
+                {
+                    // Surface a reason only when we couldn't satisfy the full request: a hard occupancy
+                    // error on the first tile, or the predicate that forced us to stop short.
+                    string? blocked = count < maxTiles ? (clampReason ?? reason) : null;
+                    return new GrowChainResult(count, action, blocked);
+                }
+
+                clampReason ??= reason;
+            }
+
+            return new GrowChainResult(0, null, clampReason ?? "no valid grow");
+        }
+
+        /// <summary>
+        /// Build the combined swap-source + place-N-pieces action for a straight chain of
+        /// <paramref name="count"/> tiles and validate the result against the network predicates. Returns
+        /// false (with a <paramref name="reason"/>) if any piece can't be realised or the result is invalid,
+        /// so <see cref="GrowChainFor"/> can shrink the count and retry.
+        /// </summary>
+        private static bool TryBuildChainAction(
+            IMapModel map, Player executor, ExpandableXRegistry registry, PieceVariantSet set,
+            BuildingModel building, IReadOnlyDictionary<TileDirection, SlotRole> worldFaces,
+            GridRotation rotation, TileDirection face, SlotRole carriedRole,
+            IReadOnlyList<GlobalTileCoordinate> positions, int count,
+            NetworkCandidate? network, out IPlayerAction? action, out string? reason)
+        {
+            action = null;
+            reason = null;
+
+            // Source: the grown face becomes a Join (it now abuts the first new piece).
+            var sourceWorld = new Dictionary<TileDirection, SlotRole>(worldFaces) { [face] = SlotRole.Join };
+            if (!NetworkPieceRealization.TryRealize(set, sourceWorld, rotation, out string sourceDef, out GridRotation sourceRotation, out var sourceRoles)
+                || !TryResolveDefinition(registry, sourceDef, out var sourceDefinition))
+            {
+                reason = "no variant for the grown source";
+                return false;
+            }
+
+            TileDirection back = face.Opposite;
+            TileDirection sideCw = face.Rotate(GridRotation.RotateCW);
+            TileDirection sideCcw = face.Rotate(GridRotation.RotateCCW);
+
+            var places = new List<(GlobalTileCoordinate Pos, IBuildingDefinition Def, GridRotation Rot, PieceState State)>(count);
+            for (int k = 1; k <= count; k++)
+            {
+                // Each piece joins the one behind it; intermediate pieces also join the next one ahead
+                // (a straight pass-through), while the final end piece carries the stretched gameplay role.
+                var pieceWorld = new Dictionary<TileDirection, SlotRole>
+                {
+                    [back] = SlotRole.Join,
+                    [sideCw] = SlotRole.Disabled,
+                    [sideCcw] = SlotRole.Disabled,
+                    [face] = k == count ? carriedRole : SlotRole.Join,
+                };
+
+                if (!NetworkPieceRealization.TryRealize(set, pieceWorld, GridRotation.NoRotate, out string pieceDef, out GridRotation pieceRotation, out var pieceRoles)
+                    || !TryResolveDefinition(registry, pieceDef, out var pieceDefinition))
+                {
+                    reason = "no variant for a chain piece";
+                    return false;
+                }
+
+                places.Add((positions[k - 1], pieceDefinition, pieceRotation, new PieceState(set.Piece, set.Slots, pieceRoles)));
+            }
+
+            // Re-validate the projected whole-building network (issue #7). Pinch-and-stretch keeps role
+            // counts invariant, so this only ever gates a Custom author predicate — but check it so the
+            // count GrowChainFor commits to is always a valid building.
+            if (network is not null)
+            {
+                NetworkCandidate grown = network.With([
+                    NetworkChange.Place(building.Transform.Position, new PieceState(set.Piece, set.Slots, sourceRoles)),
+                    ..places.Select(place => NetworkChange.Place(place.Pos, place.State)),
+                ]);
+
+                if (grown.FirstViolation() is { } violation)
+                {
+                    reason = violation;
+                    return false;
+                }
+            }
+
+            // One combined undoable action: swap the source to its Join'd variant, then place each new
+            // piece. The network re-forms from geometry once the bunch edit settles (ADR-0012).
+            List<IPlayerAction> actions =
+            [
+                new ExpandableXSwapVariantAction(
+                    map, executor, building.Id,
+                    new GlobalTileTransform(building.Transform.Position, sourceRotation),
+                    building.Configuration, building.Definition, sourceDefinition),
+                ..places.Select(place => new ExpandableXPlaceBuildingAction(
+                    map, executor, place.Def, new GlobalTileTransform(place.Pos, place.Rot), configuration: null)),
+            ];
+
+            action = new CombinedUndoablePlayerAction(actions);
+            return true;
+        }
+
+        /// <summary>
+        /// Forward-simulate shrinking <paramref name="building"/> inward from its end by up to
+        /// <paramref name="maxTiles"/> pieces — the multi-tile-per-drag inward mirror of
+        /// <see cref="GrowChainFor"/> (ADR-0014). <paramref name="building"/> must be a removable end (one
+        /// join); the walk follows the spine inward <i>in a straight line</i> (the drag is one straight
+        /// gesture — it never bends around corners, matching <see cref="GrowChainFor"/>), removing each
+        /// successive end piece and folding the grabbed end's leading (outward) role onto the final survivor
+        /// (reverse pinch-and-stretch). It stops at the far end (the survivor becomes a singleton), a corner
+        /// (the spine turns), or a branch (a piece with ≥2 joins after the removal, never a single-join
+        /// end — #12), then shrinks the count until the result satisfies the network predicates, so the
+        /// returned <see cref="ShrinkChainResult.Tiles"/> is always a valid shrink that leaves the network
+        /// connected (leaf removals can't split it).
+        /// </summary>
+        public static ShrinkChainResult ShrinkChainFor(
+            IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel building, int maxTiles)
+        {
+            if (maxTiles <= 0 || !TryResolveNetworkPiece(registry, building, out var set, out var worldFaces))
+            {
+                return new ShrinkChainResult(0, null, null);
+            }
+
+            var joinFaces = worldFaces.Where(f => f.Value == SlotRole.Join).Select(f => f.Key).ToList();
+            if (joinFaces.Count == 0)
+            {
+                return new ShrinkChainResult(0, null, null); // a singleton is already minimal
+            }
+            if (joinFaces.Count != 1)
+            {
+                return new ShrinkChainResult(0, null, "only an end piece (one join) can shrink");
+            }
+
+            // The role carried back to the surviving end: the grabbed end's leading (outward) role rides
+            // onto the final survivor's freed face (reverse of grow's pinch-and-stretch).
+            TileDirection grabbedJoin = joinFaces[0];
+            SlotRole carried = worldFaces.TryGetValue(grabbedJoin.Opposite, out SlotRole r) ? r : SlotRole.Disabled;
+
+            NetworkCandidate.TryReadFrom(registry, building.Transform.Position, out NetworkCandidate? network);
+
+            // Walk the spine inward along a fixed straight axis. Each step records the piece removed, the
+            // neighbour the role would fold onto if the shrink stops here, that neighbour's set/world-faces,
+            // and the face on it pointing back at the removed piece (which the carried role lands on). We keep
+            // walking only while the neighbour stays a straight pass-through along that axis; a corner, a
+            // branch, or the far end caps the spine (see the continue check below).
+            var steps = new List<(BuildingModel Remove, BuildingModel Survivor, PieceVariantSet SurvivorSet,
+                IReadOnlyDictionary<TileDirection, SlotRole> SurvivorWorld, TileDirection FoldFace)>();
+            BuildingModel cur = building;
+            TileDirection inwardDir = grabbedJoin;
+            while (steps.Count < maxTiles)
+            {
+                GlobalTileCoordinate neighbourPos = cur.Transform.Position.Move(inwardDir);
+                if (!map.TryGetBuilding(neighbourPos, out BuildingModel neighbour)
+                    || !registry.VariantsByDefId.TryGetValue(neighbour.Definition.Id.Name, out VariantPlacement? neighbourPlacement)
+                    || neighbourPlacement.Set.Layout.LayoutId != set.Layout.LayoutId)
+                {
+                    break; // no same-family neighbour to fold into
+                }
+
+                var neighbourWorld = NetworkPieceRealization.WorldFaceRoles(
+                    neighbourPlacement.Set, neighbourPlacement.SlotState, neighbour.Transform.Rotation);
+                var neighbourJoins = neighbourWorld.Where(f => f.Value == SlotRole.Join).Select(f => f.Key).ToList();
+                TileDirection backFace = inwardDir.Opposite; // neighbour's face pointing back at cur
+
+                steps.Add((cur, neighbour, neighbourPlacement.Set, neighbourWorld, backFace));
+
+                // Continue the spine only while it runs *straight*. Removing cur frees the neighbour's join on
+                // backFace; the spine carries on only if the neighbour then becomes a single-join end whose
+                // one remaining join points the same way we're travelling (inwardDir). A corner (the remaining
+                // join is perpendicular), a branch (≥2 remaining), or the far end (0 remaining) caps the spine
+                // — the neighbour is the survivor. The drag is one straight gesture, so it never bends around
+                // corners (matching GrowChainFor); path-tracing shrink could be a deliberate future gesture.
+                // The joins the neighbour keeps once cur is gone: all of them except the seam toward cur
+                // (backFace). backFace is guaranteed present here — border-closing (ADR-0012) pairs joins
+                // across a shared seam, and cur is known to join the neighbour on inwardDir — so this is
+                // Count - 1 in practice; expressing it as "all but backFace" stays correct even if that
+                // invariant is ever violated, without a bare magic subtraction.
+                int remainingJoins = neighbourJoins.Count(direction => direction != backFace);
+                if (remainingJoins != 1 || !neighbourJoins.Contains(inwardDir))
+                {
+                    break;
+                }
+
+                cur = neighbour;
+                // inwardDir stays fixed — the spine, like the drag, is straight.
+            }
+
+            // Take the largest reachable count whose folded survivor realises and whose whole-building result
+            // satisfies the network predicates. Removals carry no gameplay role and the one carried role just
+            // moves, so role counts stay invariant — only a Custom predicate can gate, so shrink until valid.
+            string? lastReason = null;
+            for (int count = steps.Count; count >= 1; count--)
+            {
+                var step = steps[count - 1];
+                var survivorWorld = new Dictionary<TileDirection, SlotRole>(step.SurvivorWorld)
+                {
+                    [step.FoldFace] = carried, // the face that joined the last removed piece now carries the role
+                };
+
+                if (!NetworkPieceRealization.TryRealize(step.SurvivorSet, survivorWorld, step.Survivor.Transform.Rotation, out string survivorDef, out GridRotation survivorRotation, out var survivorRoles)
+                    || !TryResolveDefinition(registry, survivorDef, out var survivorDefinition))
+                {
+                    lastReason = "no variant for the folded survivor";
+                    continue;
+                }
+
+                if (network is not null)
+                {
+                    var shrunk = network.With([
+                        ..steps.Take(count).Select(remove => NetworkChange.Remove(remove.Remove.Transform.Position)),
+                        NetworkChange.Place(
+                            step.Survivor.Transform.Position,
+                            new PieceState(step.SurvivorSet.Piece, step.SurvivorSet.Slots, survivorRoles))
+                    ]);
+
+                    if (shrunk.FirstViolation() is { } violation)
+                    {
+                        lastReason = violation;
+                        continue;
+                    }
+                }
+
+                List<IPlayerAction> actions = [
+                    ..steps.Take(count).Select(remove => new ExpandableXRemoveBuildingAction(
+                        map, executor, remove.Remove.Id, remove.Remove.Definition, remove.Remove.Transform, remove.Remove.Configuration)),
+                    new ExpandableXSwapVariantAction(
+                        map, executor, step.Survivor.Id,
+                        new GlobalTileTransform(step.Survivor.Transform.Position, survivorRotation),
+                        step.Survivor.Configuration, step.Survivor.Definition, survivorDefinition)
+                ];
+
+                // Surface a reason only when a longer shrink was actually refused (predicate/realisation);
+                // simply running out of spine (a shorter chain than requested) is not an error.
+                string? blocked = count < steps.Count ? lastReason : null;
+                return new ShrinkChainResult(count, new CombinedUndoablePlayerAction(actions), blocked, step.Survivor.Id);
+            }
+
+            return new ShrinkChainResult(0, null, lastReason, default);
+        }
+
+        /// <summary>
+        /// The drag handles on <paramref name="building"/> itself (one network piece) — the per-piece slice
+        /// of the unified control surface (issue #5 / ADR-0014). Each outer face that can grow and/or the
+        /// single leading face that can shrink becomes one <see cref="ExpansionHandle"/>, with the two
+        /// directions merged: the leading face of a removable end is both a grow face (drag out) and a shrink
+        /// face (drag in). Liveness reuses the single-tile <see cref="GrowOptionsFor"/> / <see cref="ShrinkOptionFor"/>
+        /// — "can you start a drag this way at all" — while the drag magnitude itself runs through
+        /// <see cref="GrowChainFor"/> / <see cref="ShrinkChainFor"/>. A face that can do neither is omitted
+        /// (Q9). Empty for a non-network piece. The whole-building handle set is the union of this over every
+        /// network member (expansion is not focus-scoped — Q3), assembled by the draw/input layer.
+        /// </summary>
+        public static IReadOnlyList<ExpansionHandle> HandlesFor(
+            IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel building)
+        {
+            var handles = new List<ExpansionHandle>();
+            if (!TryResolveNetworkPiece(registry, building, out _, out var worldFaces))
+            {
+                return handles;
+            }
+
+            // The shrink acts on the leading (outward) face of a single-join end: the join's opposite. Null
+            // when the piece isn't a removable end, so no face gets an inward (shrink) direction.
+            var joinFaces = worldFaces.Where(f => f.Value == SlotRole.Join).Select(f => f.Key).ToList();
+            TileDirection? shrinkFace = joinFaces.Count == 1
+                && ShrinkOptionFor(map, executor, registry, building) is { Available: true }
+                    ? joinFaces[0].Opposite
+                    : null;
+
+            // Grow liveness per outer face (every role-carrying, non-Join face shows an option; Available is
+            // its single-tile reachability).
+            var growable = GrowOptionsFor(map, executor, registry, building)
+                .ToDictionary(option => option.Face, option => option.Available);
+
+            var faces = new HashSet<TileDirection>(growable.Keys);
+            if (shrinkFace is { } face)
+            {
+                faces.Add(face);
+            }
+
+            foreach (TileDirection direction in faces)
+            {
+                bool canGrow = growable.TryGetValue(direction, out bool available) && available;
+                bool canShrink = shrinkFace == direction;
+                if (canGrow || canShrink)
+                {
+                    handles.Add(new ExpansionHandle(building.Id, building.Transform.Position, direction, canGrow, canShrink));
+                }
+            }
+
+            return handles;
         }
 
         private static GrowOption BuildGrowOption(
