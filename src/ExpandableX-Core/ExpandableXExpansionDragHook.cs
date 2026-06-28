@@ -54,6 +54,7 @@ namespace ExpandableX.Core
         private readonly ILogger _logger;
         private readonly monomod::MonoMod.RuntimeDetour.Hook _hudHook;
         private readonly monomod::MonoMod.RuntimeDetour.Hook _cameraHook;
+        private readonly monomod::MonoMod.RuntimeDetour.Hook _wireTooltipHook;
 
         // Transient drag state. The grabbed face-handle carries its CanGrow/CanShrink; direction + magnitude
         // are recomputed from the cursor each frame.
@@ -71,6 +72,16 @@ namespace ExpandableX.Core
         // tile in this direction.
         private float _heldTime;
         private bool _clickGrow;
+
+        // A throwaway non-null GameObject parked in InputDownstreamContext.UIHoverElement while the cursor is
+        // over (or dragging) a handle, so the mass-selection HUD's "cursor over UI" guard suppresses its world
+        // hover-highlight under the handle. Created lazily; destroyed on dispose.
+        private UnityEngine.GameObject? _hoverSentinel;
+
+        // True for the frame while the cursor is over (or dragging) a handle. Set in the HUD prefix (which
+        // runs before the parts) and read by the wire-tooltip postfix — some hover-info parts find the
+        // building under the cursor directly (ignoring UIHoverElement), so they need explicit suppression.
+        private bool _cursorOverHandle;
 
         public ExpandableXExpansionDragHook(ExpandableXRegistry registry, ILogger logger)
         {
@@ -99,18 +110,39 @@ namespace ExpandableX.Core
 
                     return (context, options);
                 });
+
+            // The wire-state hover tooltip (HUDWireContentsHelper) finds the building under the cursor itself
+            // and ignores UIHoverElement, so the UIHoverElement guard doesn't suppress it. Hide its tooltip
+            // after it updates whenever the cursor is over one of our handles — the handle owns that position.
+            _wireTooltipHook = DetourHelper.CreatePostfixHook(
+                (HUDWireContentsHelper helper, InputDownstreamContext context, FrameDrawOptions options) => helper.OnGameUpdate(context, options),
+                (helper, context, options) =>
+                {
+                    if (_cursorOverHandle)
+                    {
+                        helper.gameObject.SetActive(false);
+                    }
+                });
         }
 
         public void Dispose()
         {
             _hudHook?.Dispose();
             _cameraHook?.Dispose();
+            _wireTooltipHook?.Dispose();
+            if (_hoverSentinel != null)
+            {
+                UnityEngine.Object.Destroy(_hoverSentinel);
+            }
         }
 
         private void Update(InputDownstreamContext context, FrameDrawOptions options)
         {
             try
             {
+                // Reset each frame; SuppressWorldHover raises it while the cursor is over (or dragging) a handle.
+                _cursorOverHandle = false;
+
                 if (_registry.Map is not { } map
                     || _registry.LocalPlayer is not { } player
                     || _registry.PlayerActions is not { } actions
@@ -134,19 +166,24 @@ namespace ExpandableX.Core
 
                 if (_dragging)
                 {
+                    // While dragging a handle the cursor isn't hovering buildings — suppress the world hover.
+                    SuppressWorldHover(context);
                     UpdateDrag(context, options, map, player, actions, cursor);
                     return;
                 }
 
-                // Idle: claim the press only when it lands on a handle (the hit-test gates the consuming read,
-                // so a normal click elsewhere is untouched).
-                if (SelectedBuilding(player) is not { } selected)
+                // Idle: a hit means the cursor is over a handle. Suppress the world hover-highlight under it,
+                // then claim the press when it lands (the hit-test gates the consuming read, so a normal click
+                // elsewhere is untouched).
+                if (SelectedBuilding(player) is not { } selected
+                    || !ExpansionHandleGeometry.TryHitTest(map, player, _registry, selected, cursor, out ExpansionHandle hit, out _clickGrow))
                 {
                     return;
                 }
 
-                if (ExpansionHandleGeometry.TryHitTest(map, player, _registry, selected, cursor, out ExpansionHandle hit, out _clickGrow)
-                    && context.ConsumeWasActivated(PressAction))
+                SuppressWorldHover(context);
+
+                if (context.ConsumeWasActivated(PressAction))
                 {
                     _dragging = true;
                     _handle = hit;
@@ -376,6 +413,22 @@ namespace ExpandableX.Core
 
             cursor = default;
             return false;
+        }
+
+        /// <summary>
+        /// Mark the cursor as "over UI" for this frame by parking a sentinel in the input context's
+        /// <see cref="InputDownstreamContext.UIHoverElement"/> — but only when nothing real is there — so the
+        /// mass-selection HUD skips its world hover-highlight under the handle (its guard is
+        /// <c>UIHoverElement == null</c>). A handle is an interactive overlay, so this is the same treatment a
+        /// real UI element gets. Self-clearing: the context is rebuilt each frame, so leaving the handle drops it.
+        /// </summary>
+        private void SuppressWorldHover(InputDownstreamContext context)
+        {
+            _cursorOverHandle = true;
+            if (context.UIHoverElement == null)
+            {
+                context.UIHoverElement = _hoverSentinel ??= new UnityEngine.GameObject("ExpandableX_HandleHoverSuppressor");
+            }
         }
 
         /// <summary>The selected logical building to hit-test against: the network focus piece, else a single selection.</summary>
