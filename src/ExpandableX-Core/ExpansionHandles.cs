@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Game.Core.Coordinates;
+using Unity.Mathematics;
 
 namespace ExpandableX.Core
 {
@@ -69,10 +70,12 @@ namespace ExpandableX.Core
         }
 
         /// <summary>
-        /// One handle per sequence direction. A sequence runs along a single authored direction; the outward
-        /// world face grows (advance) and the inward one shrinks (retreat). The authored direction is treated
-        /// as local and rotated into world space by the building's placement (consistent with how dynamic
-        /// pieces map local faces to world — to be confirmed in-game for static layouts).
+        /// One handle per sequence direction. A sequence runs along a single authored direction (local,
+        /// rotated into world by the building's placement): dragging out along it grows (advance), inward
+        /// shrinks (retreat). Unlike a network piece (one tile, handle on its own face), a static building is
+        /// one multi-tile entity, so the handle is anchored on the footprint's furthest tile in that
+        /// direction — the edge where the next cell is added / the last one removed — read from the building's
+        /// own footprint, not its origin.
         /// </summary>
         private static IReadOnlyList<ExpansionHandle> SequenceHandles(PieceVariantSet set, BuildingModel selected)
         {
@@ -87,15 +90,46 @@ namespace ExpandableX.Core
             {
                 bool canGrow = byDirection.Any(option => option.Kind == ExpansionKind.Expand && option.Available);
                 bool canShrink = byDirection.Any(option => option.Kind == ExpansionKind.Shrink && option.Available);
-                if (canGrow || canShrink)
+                if (!canGrow && !canShrink)
                 {
-                    handles.Add(new ExpansionHandle(
-                        selected.Id, selected.Transform.Position,
-                        byDirection.Key.Rotate(selected.Transform.Rotation), canGrow, canShrink));
+                    continue;
                 }
+
+                TileDirection worldDirection = byDirection.Key.Rotate(selected.Transform.Rotation);
+                handles.Add(new ExpansionHandle(
+                    selected.Id, FurthestFootprintTile(selected, worldDirection), worldDirection, canGrow, canShrink));
             }
 
             return handles;
+        }
+
+        /// <summary>The building's occupied footprint tile furthest along <paramref name="worldDirection"/> — the edge a sequence grows from / shrinks back to. Falls back to the origin if the footprint can't be read.</summary>
+        private static GlobalTileCoordinate FurthestFootprintTile(BuildingModel building, TileDirection worldDirection)
+        {
+            GlobalTileCoordinate origin = building.Transform.Position;
+            float3 originCenter = (float3)origin.ToCenter_W();
+            float3 step = (float3)origin.Move(worldDirection).ToCenter_W() - originCenter;
+
+            GlobalTileCoordinate furthest = origin;
+            float best = float.NegativeInfinity;
+
+            // ConnectorData is marked obsolete ("should be attached") but still returns the live footprint
+            // tiles; reading it is the delegate-to-game approach the mod already takes for such APIs.
+#pragma warning disable CS0618
+            TileVector[] tiles = building.Definition.ConnectorData.Tiles;
+#pragma warning restore CS0618
+            foreach (TileVector local in tiles)
+            {
+                GlobalTileCoordinate tile = local.ToGlobal(building.Transform);
+                float projection = math.dot((float3)tile.ToCenter_W() - originCenter, step);
+                if (projection > best)
+                {
+                    best = projection;
+                    furthest = tile;
+                }
+            }
+
+            return furthest;
         }
     }
 }

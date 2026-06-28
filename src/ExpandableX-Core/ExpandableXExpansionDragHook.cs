@@ -1,5 +1,6 @@
 extern alias monomod;
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Game.Core.Coordinates;
 using ShapezShifter.SharpDetour;
@@ -28,9 +29,10 @@ namespace ExpandableX.Core
     /// no drag) changes by a single tile in the direction of the cap clicked — grow or shrink — so a one-tile
     /// change needs no drag; a longer hold that never drags commits nothing.
     ///
-    /// First cut, network layouts only. Follow-ups: static-sequence drag (cutter steps); a true ghost-piece
-    /// preview (currently placeholder caps along the target tiles); and a cell-based hit-test (cursor tile →
-    /// adjacent faces) instead of enumerating the whole network each frame. Fails open throughout.
+    /// Network layouts grow/shrink a multi-tile chain; static sequence layouts (cutter etc.) step one stop
+    /// per gesture (multi-step-per-drag is a follow-up). Other follow-ups: a true ghost-piece preview
+    /// (currently placeholder caps along the target tiles, network only); and a cell-based hit-test (cursor
+    /// tile → adjacent faces) instead of enumerating the whole network each frame. Fails open throughout.
     /// </summary>
     internal sealed class ExpandableXExpansionDragHook : IDisposable
     {
@@ -172,8 +174,9 @@ namespace ExpandableX.Core
                 return;
             }
 
-            // The grabbed building can vanish mid-drag (e.g. undo); abort if so.
-            if (!map.TryGetBuilding(_handle.Position, out BuildingModel building))
+            // The grabbed building can vanish mid-drag (e.g. undo); abort if so. Resolve by id, not by the
+            // handle's tile — a static handle is anchored on a footprint edge tile, not the building origin.
+            if (!map.TryGetBuilding(_handle.Piece, out BuildingModel building))
             {
                 _dragging = false;
                 return;
@@ -204,7 +207,10 @@ namespace ExpandableX.Core
 
             if (context.IsActive(PressAction))
             {
-                if (_magnitude > 0)
+                // The placeholder preview draws one cap per grown tile, which only matches the network chain;
+                // a static sequence step isn't a per-tile extent, so skip it there (no preview until the real
+                // ghost renderer lands).
+                if (_magnitude > 0 && IsDynamic(building))
                 {
                     DrawPreview(options, building);
                 }
@@ -250,6 +256,15 @@ namespace ExpandableX.Core
 
         private void Commit(IMapModel map, Player player, PlayerActionManager actions, BuildingModel building)
         {
+            // Static sequence layouts (cutter etc.) step the sequence one stop per gesture; Dynamic network
+            // layouts grow/shrink a multi-tile chain.
+            if (_registry.VariantsByDefId.TryGetValue(building.Definition.Id.Name, out VariantPlacement placement)
+                && placement.Set.Layout is Layout.Static)
+            {
+                CommitSequenceStep(map, player, actions, building, placement.Set);
+                return;
+            }
+
             if (_grow)
             {
                 GrowChainResult grown = NetworkExpansionEngine.GrowChainFor(map, player, _registry, building, _handle.Face, _magnitude);
@@ -268,6 +283,58 @@ namespace ExpandableX.Core
                 _registry.NetworkSelection?.RequestFocusAfterChange(shrunk.FocusAfter);
             }
         }
+
+        /// <summary>
+        /// Step a static sequence (cutter etc.) one stop in the gesture's direction: find the matching
+        /// expand/shrink option for the grabbed face and swap the building to that step's target layout base
+        /// definition at the same orientation, as one undoable action — the same move the old sequence HUD
+        /// buttons made. One step per gesture for now; mapping a drag's magnitude to several sequence steps
+        /// is a follow-up.
+        /// </summary>
+        private void CommitSequenceStep(IMapModel map, Player player, PlayerActionManager actions, BuildingModel building, PieceVariantSet set)
+        {
+            ExpansionKind kind = _grow ? ExpansionKind.Expand : ExpansionKind.Shrink;
+            foreach (ExpansionOption option in SequenceEngine.OptionsFor(set.Registration, set.Layout))
+            {
+                if (option.Kind != kind
+                    || !option.Available
+                    || option.Direction.Rotate(building.Transform.Rotation) != _handle.Face
+                    || option.TargetLayout is not Layout.Static target
+                    || !TryResolveDefinition(target.Piece.BaseDefinitionId, out IBuildingDefinition? targetDefinition))
+                {
+                    continue;
+                }
+
+                // A sequence swaps to a different building definition at the same orientation (id-as-truth).
+                var swap = new ExpandableXSwapVariantAction(
+                    map, player, building.Id,
+                    building.Transform,
+                    new GlobalTileTransform(building.Transform.Position, building.Transform.Rotation),
+                    building.Configuration, building.Definition, targetDefinition);
+                actions.TryScheduleAction(swap);
+                return;
+            }
+        }
+
+        private bool TryResolveDefinition(string definitionId, [NotNullWhen(true)] out IBuildingDefinition? definition)
+        {
+            definition = null;
+            GameMode mode = _registry.CurrentMode;
+            if (mode is null)
+            {
+                return false;
+            }
+
+#pragma warning disable CS0618
+            var id = new BuildingDefinitionId(definitionId);
+#pragma warning restore CS0618
+            return mode.Buildings._DefinitionsById.TryGetValue(id, out definition);
+        }
+
+        /// <summary>True when the building is a network (Dynamic) piece — used to gate the network-only drag preview.</summary>
+        private bool IsDynamic(BuildingModel building) =>
+            _registry.VariantsByDefId.TryGetValue(building.Definition.Id.Name, out VariantPlacement placement)
+            && placement.Set.Layout is Layout.Dynamic;
 
         /// <summary>
         /// Placeholder preview: a faint cap at each target tile so the drag extent is visible. (Follow-up:
