@@ -314,7 +314,7 @@ namespace ExpandableX.Core
             // action system runs it at a safe point and records it on the undo stack; its reverse swaps back.
             var transform = new GlobalTileTransform(building.Transform.Position, targetRotation);
             var swap = new ExpandableXSwapVariantAction(
-                map, executor, building.Id, transform, building.Configuration, building.Definition, targetDef);
+                map, executor, building.Id, building.Transform, transform, building.Configuration, building.Definition, targetDef);
             playerActions.TryScheduleAction(swap);
 
             _logger.Info.Log($"ExpandableX-Core: slot change: scheduled swap {currentDefName} -> {targetDefName}");

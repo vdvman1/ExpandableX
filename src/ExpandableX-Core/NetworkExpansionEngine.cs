@@ -185,6 +185,7 @@ namespace ExpandableX.Core
                 map, executor, building.Id, building.Definition, building.Transform, building.Configuration);
             var swapNeighbour = new ExpandableXSwapVariantAction(
                 map, executor, neighbour.Id,
+                neighbour.Transform,
                 new GlobalTileTransform(neighbour.Transform.Position, neighbourNewRotation),
                 neighbour.Configuration, neighbour.Definition, neighbourDefinition);
 
@@ -354,6 +355,7 @@ namespace ExpandableX.Core
             [
                 new ExpandableXSwapVariantAction(
                     map, executor, building.Id,
+                    building.Transform,
                     new GlobalTileTransform(building.Transform.Position, sourceRotation),
                     building.Configuration, building.Definition, sourceDefinition),
                 ..places.Select(place => new ExpandableXPlaceBuildingAction(
@@ -489,6 +491,7 @@ namespace ExpandableX.Core
                         map, executor, remove.Remove.Id, remove.Remove.Definition, remove.Remove.Transform, remove.Remove.Configuration)),
                     new ExpandableXSwapVariantAction(
                         map, executor, step.Survivor.Id,
+                        step.Survivor.Transform,
                         new GlobalTileTransform(step.Survivor.Transform.Position, survivorRotation),
                         step.Survivor.Configuration, step.Survivor.Definition, survivorDefinition)
                 ];
@@ -655,10 +658,12 @@ namespace ExpandableX.Core
             [
                 new ExpandableXSwapVariantAction(
                     map, executor, building.Id,
+                    building.Transform,
                     new GlobalTileTransform(building.Transform.Position, sourceRotation),
                     building.Configuration, building.Definition, sourceDefinition),
                 ..fusedNeighbours.Select(fusedNeighbour => new ExpandableXSwapVariantAction(
                     map, executor, fusedNeighbour.Building.Id,
+                    fusedNeighbour.Building.Transform,
                     new GlobalTileTransform(fusedNeighbour.Building.Transform.Position, fusedNeighbour.Rotation),
                     fusedNeighbour.Building.Configuration, fusedNeighbour.Building.Definition, fusedNeighbour.Definition)),
                 new ExpandableXPlaceBuildingAction(
