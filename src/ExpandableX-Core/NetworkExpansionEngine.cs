@@ -86,6 +86,13 @@ namespace ExpandableX.Core
         private static readonly TileDirection[] PlanarFaces =
             { TileDirection.East, TileDirection.South, TileDirection.West, TileDirection.North };
 
+        // TUNABLE: how far HandlesFor probes a *blocked* face for a valid longer grow before hiding its
+        // handle (tiles). It only runs when the cheap single-tile grow is already blocked, so it stays cheap;
+        // bounded (rather than the drag's full range) because it realises a trial chain. A grow that becomes
+        // valid only beyond this distance won't show a handle — the common drag-through case needs a tile or
+        // two — while the drag itself, once started, still runs to its own larger cap.
+        private const int GrowLivenessProbeTiles = 8;
+
         /// <summary>Grow options for each planar face of <paramref name="building"/> (empty for non-network families).</summary>
         public static IReadOnlyList<GrowOption> GrowOptionsFor(
             IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel building)
@@ -204,15 +211,22 @@ namespace ExpandableX.Core
         ///
         /// v1 first cut and its seams (matching <see cref="BuildGrowOption"/>'s single-tile scope):
         /// <list type="bullet">
-        /// <item><b>Incidental fusion within the chain is not yet applied</b> (#4 is handled per-tile by the
-        /// single-tile path). A chain extends only into empty tiles, so the common "extend a line into open
-        /// space" case is exact; a chain dragged alongside an existing same-network arm would not fuse the
-        /// touching faces — layered in a follow-up before the drag UI can trigger it.</item>
-        /// <item><b>Grow-through same-network tiles is not yet supported.</b> The chain stops at any occupied
-        /// tile, so it can neither gap-fill (fuse into a same-network piece it runs into) nor pass *through*
-        /// same-network pieces to continue beyond them. The target behaviour treats a same-network tile as
-        /// passable when the final result stays valid, and only a *foreign* building as a hard stop — a
-        /// later step of this drag-handle work (#5), not a separate change.</item>
+        /// <item><b>Incidental fusion is applied along the chain</b> (#4, at parity with the single-tile
+        /// path): any side face of a new piece — and the final end piece's leading face — that abuts a piece
+        /// already in the source's network fuses to a Join on both sides, dropping the neighbour's now-trapped
+        /// connector. So a chain dragged alongside an existing same-network arm fuses the touching faces, and
+        /// a chain whose end lands against a same-network piece gap-fills into it. Fusion changes the
+        /// building's I/O, so the whole-building result is re-validated and the count shrinks until it holds
+        /// (see <see cref="TryBuildChainAction"/>).</item>
+        /// <item><b>Grow-through threads the chain past same-network tiles</b> (#5): a tile holding a piece
+        /// already in this building's network is passable — the spine passes through it (its entry and exit
+        /// faces fuse to Joins, merging it in) and keeps going, as long as the whole-building result stays
+        /// valid. A <i>foreign</i> building (or a same-network tile whose variant can't be resolved) is still
+        /// a hard stop. The chain can end on either a new end piece or a pass-through piece: pinch-and-stretch
+        /// carries the source's leading role onto the final tile. Ending on a pass-through is unconditional
+        /// when the grown face carries no live connector (a Disabled spacer); when it carries a real connector
+        /// the pass-through's leading face must be free (Disabled) to receive it, else a shorter chain is
+        /// taken so an in-use connector is never clobbered.</item>
         /// <item><b>ShapeLimit is not gated here</b> — neither does the single-tile path; the v1 AND gate is
         /// <see cref="ShapeLimits.Free"/>. Wire alongside the Line/Rectangle limits (#27).</item>
         /// </list>
@@ -236,37 +250,51 @@ namespace ExpandableX.Core
             NetworkCandidate.TryReadFrom(registry, building.Transform.Position, out NetworkCandidate? network);
             GridRotation rotation = building.Transform.Rotation;
 
-            // How far can the straight chain reach? Walk outward, stopping at the first occupied tile. v1
-            // takes only empty tiles. TODO(grow-through, this PR — see #5 acceptance criteria): a
-            // same-network tile in the path should be *passable* — drag through it and keep going (fusing
-            // the touched faces) as long as the final result stays valid — whereas a *different* building
-            // remains a hard stop. So "any occupied tile ends the chain" is a v1 simplification, not the
-            // target behaviour; only foreign-building occupancy is a true stop.
-            var positions = new List<GlobalTileCoordinate>(maxTiles);
+            // Walk outward, building the path the chain would follow. An empty tile is a slot for a new
+            // piece; a tile holding a piece already in this building's network is *passable* — the chain
+            // threads through it (fusing the touched faces) and keeps going (grow-through, #5); a foreign
+            // building, or a same-network tile we can't resolve, is a hard stop. maxTiles bounds the drag.
+            var path = new List<(GlobalTileCoordinate Pos, bool IsNew)>(maxTiles);
             GlobalTileCoordinate pos = building.Transform.Position;
             string? clampReason = null;
             for (int k = 0; k < maxTiles; k++)
             {
                 pos = pos.Move(face);
-                if (map.TryGetBuilding(pos, out _))
+                if (!map.TryGetBuilding(pos, out BuildingModel occupant))
                 {
-                    // Only the very first tile being occupied is an actual error to report; clamping farther
-                    // out is just "grew as far as the space allowed".
-                    clampReason = k == 0 ? "tile occupied" : null;
-                    break;
+                    path.Add((pos, true)); // empty: a new piece
+                    continue;
                 }
 
-                positions.Add(pos);
+                // Pass through a same-network piece (never the source — it is behind us); stop at anything
+                // else. The pass-through test is same connected component, so grow-through can't thread into a
+                // *different* network — that stays a hard stop, exactly like a foreign building.
+                if (network is not null
+                    && occupant.Id != building.Id
+                    && network.Contains(occupant.Transform.Position)
+                    && registry.VariantsByDefId.ContainsKey(occupant.Definition.Id.Name))
+                {
+                    path.Add((pos, false)); // same-network: a pass-through
+                    continue;
+                }
+
+                // Only the very first tile being a hard stop is an actual error to report; clamping farther
+                // out is just "grew as far as the space allowed".
+                clampReason = k == 0 ? "tile occupied" : null;
+                break;
             }
 
-            // Take the largest reachable count whose realised whole-building result still satisfies the
-            // network predicates. Pure pinch-and-stretch is role-count-invariant, so AtLeastN-style
-            // predicates always hold; a Custom predicate might not, so shrink the count until it validates.
-            for (int count = positions.Count; count >= 1; count--)
+            // Take the largest reachable count whose realised whole-building result satisfies the network
+            // predicates, shrinking until it validates. The chain can end on either a new tile or a
+            // pass-through tile: pinch-and-stretch carries the source's leading role onto whatever the final
+            // tile is — a new end piece, or an existing pass-through piece whose leading face is free
+            // (TryBuildChainAction gates the latter on that face currently being Disabled, refusing the count
+            // otherwise so a shorter chain is tried).
+            for (int count = path.Count; count >= 1; count--)
             {
                 if (TryBuildChainAction(
                         map, executor, registry, set, building, worldFaces, rotation, face, carriedRole,
-                        positions, count, network, out IPlayerAction? action, out string? reason))
+                        path, count, network, out IPlayerAction? action, out string? reason))
                 {
                     // Surface a reason only when we couldn't satisfy the full request: a hard occupancy
                     // error on the first tile, or the predicate that forced us to stop short.
@@ -281,22 +309,27 @@ namespace ExpandableX.Core
         }
 
         /// <summary>
-        /// Build the combined swap-source + place-N-pieces action for a straight chain of
-        /// <paramref name="count"/> tiles and validate the result against the network predicates. Returns
-        /// false (with a <paramref name="reason"/>) if any piece can't be realised or the result is invalid,
-        /// so <see cref="GrowChainFor"/> can shrink the count and retry.
+        /// Build the combined swap-source + swap-existing + place-new-pieces action for the first
+        /// <paramref name="count"/> steps of <paramref name="path"/> (a straight run of empty "new" tiles and
+        /// pass-through same-network tiles), applying incidental fusion (#4) to any new-piece face that abuts
+        /// a same-network piece, threading the spine through each pass-through tile (grow-through, #5), and
+        /// validating the result against the network predicates. Returns false (with a <paramref name="reason"/>)
+        /// if any piece can't be realised or the result is invalid, so <see cref="GrowChainFor"/> can shrink
+        /// the count and retry. The chain's final tile carries the stretched role: a new end piece, or — when
+        /// the last step is a pass-through — that existing piece, but only if its leading face is free
+        /// (currently <see cref="SlotRole.Disabled"/>); otherwise this count is refused so the caller shrinks.
         /// </summary>
         private static bool TryBuildChainAction(
             IMapModel map, Player executor, ExpandableXRegistry registry, PieceVariantSet set,
             BuildingModel building, IReadOnlyDictionary<TileDirection, SlotRole> worldFaces,
             GridRotation rotation, TileDirection face, SlotRole carriedRole,
-            IReadOnlyList<GlobalTileCoordinate> positions, int count,
+            IReadOnlyList<(GlobalTileCoordinate Pos, bool IsNew)> path, int count,
             NetworkCandidate? network, out IPlayerAction? action, out string? reason)
         {
             action = null;
             reason = null;
 
-            // Source: the grown face becomes a Join (it now abuts the first new piece).
+            // Source: the grown face becomes a Join (it now abuts the first chain tile).
             var sourceWorld = new Dictionary<TileDirection, SlotRole>(worldFaces) { [face] = SlotRole.Join };
             if (!NetworkPieceRealization.TryRealize(set, sourceWorld, rotation, out string sourceDef, out GridRotation sourceRotation, out var sourceRoles)
                 || !TryResolveDefinition(registry, sourceDef, out var sourceDefinition))
@@ -309,18 +342,110 @@ namespace ExpandableX.Core
             TileDirection sideCw = face.Rotate(GridRotation.RotateCW);
             TileDirection sideCcw = face.Rotate(GridRotation.RotateCCW);
 
-            var places = new List<(GlobalTileCoordinate Pos, IBuildingDefinition Def, GridRotation Rot, PieceState State)>(count);
+            // Existing pieces this chain modifies, accumulated and swapped once each: pass-through tiles the
+            // spine threads through (grow-through, #5) and side-fusion neighbours a new piece runs alongside
+            // (#4). Keyed by position. WorldFaceRoles seeds the entry on first touch; later touches just layer
+            // more Join overrides on the shared dict.
+            var modifications = new Dictionary<GlobalTileCoordinate, (BuildingModel Building, PieceVariantSet Set, Dictionary<TileDirection, SlotRole> World)>();
+
+            bool TryModify(GlobalTileCoordinate at, [NotNullWhen(true)] out Dictionary<TileDirection, SlotRole>? world)
+            {
+                if (modifications.TryGetValue(at, out var existing))
+                {
+                    world = existing.World;
+                    return true;
+                }
+
+                world = null;
+                if (!map.TryGetBuilding(at, out BuildingModel piece)
+                    || !registry.VariantsByDefId.TryGetValue(piece.Definition.Id.Name, out VariantPlacement? placement))
+                {
+                    return false;
+                }
+
+                world = new Dictionary<TileDirection, SlotRole>(
+                    NetworkPieceRealization.WorldFaceRoles(placement.Set, placement.SlotState, piece.Transform.Rotation));
+                modifications[at] = (piece, placement.Set, world);
+                return true;
+            }
+
+            var places = new List<(GlobalTileCoordinate Pos, IBuildingDefinition Def, GridRotation Rot, PieceState State)>();
             for (int k = 1; k <= count; k++)
             {
-                // Each piece joins the one behind it; intermediate pieces also join the next one ahead
-                // (a straight pass-through), while the final end piece carries the stretched gameplay role.
+                (GlobalTileCoordinate piecePos, bool isNew) = path[k - 1];
+                bool isLast = k == count;
+
+                if (!isNew)
+                {
+                    // Pass-through: thread the spine through an existing same-network piece, merging it in.
+                    // Its back face (toward the previous tile) fuses to a Join. While the chain continues past
+                    // it, its leading face becomes a Join too. When this is the final tile the existing piece
+                    // is the new end: if a real gameplay connector is being carried out (the grown face wasn't
+                    // a Disabled spacer) it lands on the leading face — but only onto a free (Disabled) slot,
+                    // so an in-use connector is never clobbered (otherwise refuse and let GrowChainFor shrink).
+                    // A carried Disabled spacer has nothing to place, so the leading face is left untouched.
+                    if (!TryModify(piecePos, out Dictionary<TileDirection, SlotRole>? throughWorld))
+                    {
+                        reason = "cannot pass through this tile";
+                        return false;
+                    }
+
+                    throughWorld[back] = SlotRole.Join;
+
+                    if (!isLast)
+                    {
+                        throughWorld[face] = SlotRole.Join;
+                    }
+                    else if (carriedRole != SlotRole.Disabled)
+                    {
+                        if (!throughWorld.TryGetValue(face, out SlotRole leadingRole) || leadingRole != SlotRole.Disabled)
+                        {
+                            reason = "cannot end the grow on this piece (its leading face is in use)";
+                            return false;
+                        }
+
+                        throughWorld[face] = carriedRole;
+                    }
+
+                    continue;
+                }
+
+                // New piece: joins the tile behind it; an intermediate new piece also joins the next tile
+                // ahead, while the final piece carries the stretched gameplay role out to the new end.
                 var pieceWorld = new Dictionary<TileDirection, SlotRole>
                 {
                     [back] = SlotRole.Join,
                     [sideCw] = SlotRole.Disabled,
                     [sideCcw] = SlotRole.Disabled,
-                    [face] = k == count ? carriedRole : SlotRole.Join,
+                    [face] = isLast ? carriedRole : SlotRole.Join,
                 };
+
+                // Incidental fusion (#4): any face that isn't already a spine Join, where it abuts a piece in
+                // the source's network, fuses to a Join on both sides — a side alongside an existing arm, or
+                // the final leading face gap-filling into a piece just beyond. Same connected component only
+                // (network.Contains), so a chain can never merge two separate networks (ADR-0012 amendment).
+                if (network is not null)
+                {
+                    foreach (TileDirection side in PlanarFaces)
+                    {
+                        if (pieceWorld[side] == SlotRole.Join)
+                        {
+                            continue;
+                        }
+
+                        GlobalTileCoordinate adjacentPos = piecePos.Move(side);
+                        if (!map.TryGetBuilding(adjacentPos, out BuildingModel adjacent)
+                            || adjacent.Id == building.Id
+                            || !network.Contains(adjacent.Transform.Position)
+                            || !TryModify(adjacentPos, out Dictionary<TileDirection, SlotRole>? neighbourWorld))
+                        {
+                            continue;
+                        }
+
+                        pieceWorld[side] = SlotRole.Join;
+                        neighbourWorld[side.Opposite] = SlotRole.Join; // the neighbour's face pointing back at this piece
+                    }
+                }
 
                 if (!NetworkPieceRealization.TryRealize(set, pieceWorld, GridRotation.NoRotate, out string pieceDef, out GridRotation pieceRotation, out var pieceRoles)
                     || !TryResolveDefinition(registry, pieceDef, out var pieceDefinition))
@@ -329,17 +454,36 @@ namespace ExpandableX.Core
                     return false;
                 }
 
-                places.Add((positions[k - 1], pieceDefinition, pieceRotation, new PieceState(set.Piece, set.Slots, pieceRoles)));
+                places.Add((piecePos, pieceDefinition, pieceRotation, new PieceState(set.Piece, set.Slots, pieceRoles)));
             }
 
-            // Re-validate the projected whole-building network (issue #7). Pinch-and-stretch keeps role
-            // counts invariant, so this only ever gates a Custom author predicate — but check it so the
-            // count GrowChainFor commits to is always a valid building.
+            // Realize each modified existing piece (pass-throughs + fused side-neighbours) with its
+            // accumulated face changes.
+            var swaps = new List<(BuildingModel Building, IBuildingDefinition Def, GridRotation Rot, PieceState State)>(modifications.Count);
+            foreach (var (existing, existingSet, existingWorld) in modifications.Values)
+            {
+                if (!NetworkPieceRealization.TryRealize(existingSet, existingWorld, existing.Transform.Rotation, out string existingDef, out GridRotation existingRotation, out var existingRoles)
+                    || !TryResolveDefinition(registry, existingDef, out var existingDefinition))
+                {
+                    reason = "no variant for a fused neighbour";
+                    return false;
+                }
+
+                swaps.Add((existing, existingDefinition, existingRotation,
+                    new PieceState(existingSet.Piece, existingSet.Slots, existingRoles)));
+            }
+
+            // Re-validate the projected whole-building network (issue #7): the grown source, every new chain
+            // piece, and every modified existing piece (pass-throughs and fused neighbours change the
+            // building's I/O). Pure pinch-and-stretch keeps role counts invariant, but fusion / pass-through
+            // do not — this gate stops a chain that would fuse away a required connector or otherwise break a
+            // predicate, and GrowChainFor shrinks the count until it holds.
             if (network is not null)
             {
                 NetworkCandidate grown = network.With([
                     NetworkChange.Place(building.Transform.Position, new PieceState(set.Piece, set.Slots, sourceRoles)),
                     ..places.Select(place => NetworkChange.Place(place.Pos, place.State)),
+                    ..swaps.Select(swap => NetworkChange.Place(swap.Building.Transform.Position, swap.State)),
                 ]);
 
                 if (grown.FirstViolation() is { } violation)
@@ -349,8 +493,9 @@ namespace ExpandableX.Core
                 }
             }
 
-            // One combined undoable action: swap the source to its Join'd variant, then place each new
-            // piece. The network re-forms from geometry once the bunch edit settles (ADR-0012).
+            // One combined undoable action: swap the source to its Join'd variant, swap each modified existing
+            // piece, then place each new piece. The network re-forms from geometry once the bunch edit settles
+            // (ADR-0012).
             List<IPlayerAction> actions =
             [
                 new ExpandableXSwapVariantAction(
@@ -358,6 +503,11 @@ namespace ExpandableX.Core
                     building.Transform,
                     new GlobalTileTransform(building.Transform.Position, sourceRotation),
                     building.Configuration, building.Definition, sourceDefinition),
+                ..swaps.Select(swap => new ExpandableXSwapVariantAction(
+                    map, executor, swap.Building.Id,
+                    swap.Building.Transform,
+                    new GlobalTileTransform(swap.Building.Transform.Position, swap.Rot),
+                    swap.Building.Configuration, swap.Building.Definition, swap.Def)),
                 ..places.Select(place => new ExpandableXPlaceBuildingAction(
                     map, executor, place.Def, new GlobalTileTransform(place.Pos, place.Rot), configuration: null)),
             ];
@@ -510,9 +660,11 @@ namespace ExpandableX.Core
         /// of the unified control surface (issue #5 / ADR-0014). Each outer face that can grow and/or the
         /// single leading face that can shrink becomes one <see cref="ExpansionHandle"/>, with the two
         /// directions merged: the leading face of a removable end is both a grow face (drag out) and a shrink
-        /// face (drag in). Liveness reuses the single-tile <see cref="GrowOptionsFor"/> / <see cref="ShrinkOptionFor"/>
-        /// — "can you start a drag this way at all" — while the drag magnitude itself runs through
-        /// <see cref="GrowChainFor"/> / <see cref="ShrinkChainFor"/>. A face that can do neither is omitted
+        /// face (drag in). Shrink liveness reuses the single-tile <see cref="ShrinkOptionFor"/>; grow liveness
+        /// takes the single-tile <see cref="GrowOptionsFor"/> and, when that face is blocked, falls back to a
+        /// bounded <see cref="GrowChainFor"/> probe (a longer drag-through can be valid where one tile is not).
+        /// The drag magnitude itself then runs through <see cref="GrowChainFor"/> / <see cref="ShrinkChainFor"/>.
+        /// A face that can do neither is omitted
         /// (Q9). Empty for a non-network piece. The whole-building handle set is the union of this over every
         /// network member (expansion is not focus-scoped — Q3), assembled by the draw/input layer.
         /// </summary>
@@ -546,7 +698,15 @@ namespace ExpandableX.Core
 
             foreach (TileDirection direction in faces)
             {
-                bool canGrow = growable.TryGetValue(direction, out bool available) && available;
+                // Grow liveness is multi-tile: a single-tile grow can be blocked (e.g. it would gap-fill into
+                // a same-network piece one tile further along, fusing away the pinched connector) while a
+                // longer drag — through that piece, or ending on it — is valid (#5). So when the cheap
+                // single-tile check says no, probe the chain a bounded distance before hiding the handle. The
+                // && short-circuits for a shrink-only face (not in growable), so the probe runs only for a
+                // grow-candidate face that the single-tile path rejected.
+                bool canGrow = growable.TryGetValue(direction, out bool available)
+                    && (available
+                        || GrowChainFor(map, executor, registry, building, direction, GrowLivenessProbeTiles).Tiles > 0);
                 bool canShrink = shrinkFace == direction;
                 if (canGrow || canShrink)
                 {
