@@ -26,6 +26,14 @@ namespace ExpandableX.Core
         public IMapModel Map { get; internal set; }
 
         /// <summary>
+        /// The session's viewport, resolved from the DI container at session init. The drag-handle input
+        /// hook (issue #5) uses it to project the cursor to a world position for hit-testing, since it runs
+        /// off the HUD dispatcher rather than the mass-selection HUD's own ComputeCursorWorldPosition. Null
+        /// until a session has started; the input hook then does nothing (fail-open).
+        /// </summary>
+        public Viewport Viewport { get; internal set; }
+
+        /// <summary>
         /// The session's shared network matcher, set when at least one <see cref="Layout.Dynamic"/> family
         /// supplies a simulation factory. It is the authoritative source of network membership (the
         /// connected components of join-adjacent pieces), which grow/shrink re-validation queries rather

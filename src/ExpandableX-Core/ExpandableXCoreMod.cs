@@ -16,6 +16,7 @@ public class ExpandableXCoreMod : IMod
     private readonly ExpandableXNetworkHudHook _hudHook;
     private readonly ExpandableXFocusHighlightHook _focusHighlightHook;
     private readonly ExpandableXExpansionHandleHook _expansionHandleHook;
+    private readonly ExpandableXExpansionDragHook _expansionDragHook;
     private ExpandableXNetworkSelection? _selection;
 
     public ExpandableXCoreMod(ILogger logger)
@@ -41,6 +42,10 @@ public class ExpandableXCoreMod : IMod
 
         // Draw the drag handles on the selected logical building's growable/shrinkable faces (#5, ADR-0014).
         _expansionHandleHook = new ExpandableXExpansionHandleHook(ExpandableXRegistry.Instance, logger);
+
+        // Grab + drag a handle to grow/shrink (#5, ADR-0014, slice 3c). Claims the press over a handle on the
+        // BuildingsIdle input seam and commits the drag as an undoable grow/shrink chain.
+        _expansionDragHook = new ExpandableXExpansionDragHook(ExpandableXRegistry.Instance, logger);
 
         // Capture the session's managers once per session. They live only on the GameSessionOrchestrator's
         // per-session DI container, which the game populates as the session loads; the game exposes no
@@ -89,6 +94,7 @@ public class ExpandableXCoreMod : IMod
         registry.PlayerActions = playerActions;
         registry.Map = map;
         registry.SessionTheme = container.TryResolve(out VisualTheme theme) ? theme : null;
+        registry.Viewport = container.TryResolve(out Viewport viewport) ? viewport : null;
         // LocalPlayer isn't registered as a resolvable service; read the orchestrator's public property.
         registry.LocalPlayer = orchestrator.LocalPlayer;
 
@@ -114,6 +120,7 @@ public class ExpandableXCoreMod : IMod
         _hudHook?.Dispose();
         _focusHighlightHook?.Dispose();
         _expansionHandleHook?.Dispose();
+        _expansionDragHook?.Dispose();
         _selection?.Dispose();
     }
 }

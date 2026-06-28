@@ -28,21 +28,6 @@ namespace ExpandableX.Core
     /// </summary>
     internal sealed class ExpandableXExpansionHandleHook : IDisposable
     {
-        // TUNABLE (in-game): how far out the handle sits, in TILE units along the face (0.5 = on the face
-        // edge, 1.0 = the adjacent tile's centre); its lift off the ground (world units); and the draw alpha.
-        private const float HandleDistance = 1.1f;
-        private const float LiftHeight = 0.05f;
-        private const float Alpha = 0.9f;
-
-        // TUNABLE: when a face offers both grow and shrink (a removable end's leading face), the two caps
-        // are nudged apart sideways — ±this many tiles along the face's perpendicular — so they don't
-        // overlap. Zero when the face offers only one direction (no nudge).
-        private const float HandleSeparation = 0.2f;
-
-        // TUNABLE: belt-cap meshes are LOD arrays indexed by belt height; index 0 (height 1) is the
-        // shortest. Which height reads best as a handle is an in-game call.
-        private const int CapHeightIndex = 0;
-
         private readonly ExpandableXRegistry _registry;
         private readonly ILogger _logger;
         private readonly monomod::MonoMod.RuntimeDetour.Hook _drawHook;
@@ -88,19 +73,22 @@ namespace ExpandableX.Core
                 VisualThemeBaseResources resources = theme.BaseResources;
                 foreach (ExpansionHandle handle in ExpansionHandles.For(map, executor, _registry, selected.Value))
                 {
-                    // Outward-facing cap for grow, inward-facing for shrink. A face that is both (a removable
-                    // end's leading face) shows both — drag out grows, drag in shrinks — nudged apart
-                    // sideways so they don't draw on top of each other.
-                    float lateral = handle.CanGrow && handle.CanShrink ? HandleSeparation : 0f;
+                    // Outward-facing cap for grow, inward-facing for shrink. A both-directions face (a
+                    // removable end's leading face) shows both, nudged apart sideways so they don't overlap.
+                    float lateral = ExpansionHandleGeometry.LateralFor(handle);
 
                     if (handle.CanGrow)
                     {
-                        DrawCap(options, handle.Position, handle.Face, resources.BeltCapOutput, resources.UXBuildingBlueprintSpotIndicatorMaterial, lateral);
+                        ExpansionHandleGeometry.DrawCap(
+                            options, resources.BeltCapOutput, resources.UXBuildingBlueprintSpotIndicatorMaterial,
+                            ExpansionHandleGeometry.CapCenter(handle.Position, handle.Face, lateral), handle.Face);
                     }
 
                     if (handle.CanShrink)
                     {
-                        DrawCap(options, handle.Position, handle.Face, resources.BeltCapInput, resources.UXBuildingBlueprintSpotIndicatorMaterial, -lateral);
+                        ExpansionHandleGeometry.DrawCap(
+                            options, resources.BeltCapInput, resources.UXBuildingBlueprintSpotIndicatorMaterial,
+                            ExpansionHandleGeometry.CapCenter(handle.Position, handle.Face, -lateral), handle.Face);
                     }
                 }
             }
@@ -108,43 +96,6 @@ namespace ExpandableX.Core
             {
                 _logger.Info.Log($"ExpandableX-Core: expansion-handle draw failed, leaving the plain selection: {e}");
             }
-        }
-
-        private void DrawCap(
-            FrameDrawOptions options, GlobalTileCoordinate position, TileDirection face,
-            LODMeshAsset[] caps, MaterialReference material, float lateralTiles)
-        {
-            if (caps is null || caps.Length <= CapHeightIndex
-                || !caps[CapHeightIndex].TryGet(options.LOD.BuildingLOD, out IMeshReference mesh))
-            {
-                return;
-            }
-
-            // Sit the cap outside the face by HandleDistance *tiles*, lifted a touch off the ground, oriented
-            // to point along the face (GlobalRotationTo maps a TileDirection to the GridRotation facing it).
-            // The offset is derived from the real centre-to-centre step (one tile in world units), so it is
-            // independent of the tile↔world scale — a fixed world offset sat almost at the centre, because
-            // WorldVector.ByDirection is a 1-unit vector while a tile spans ~20 world units.
-            WorldCoordinate selfCenter = position.ToCenter_W();
-            WorldVector tileStep = position.Move(face).ToCenter_W() - selfCenter;
-            WorldCoordinate translation = selfCenter + HandleDistance * tileStep + LiftHeight * WorldVector.Up;
-
-            // Sideways nudge (along the face's perpendicular) so a both-directions face's two caps don't
-            // overlap. Same scale-independent centre-to-centre derivation, on the perpendicular tile.
-            if (lateralTiles != 0f)
-            {
-                TileDirection sideways = face.Rotate(GridRotation.RotateCW);
-                WorldVector lateralStep = position.Move(sideways).ToCenter_W() - selfCenter;
-                translation += lateralTiles * lateralStep;
-            }
-
-            GridRotation rotation = face.GlobalRotationTo().ZRotation;
-
-            options.Renderers.RegularNonInstanced.DrawMesh(
-                mesh, material,
-                FastMatrix.TranslateRotate(in translation, rotation),
-                RenderCategory.AnalogUI,
-                MaterialPropertyHelpers.CreateAlphaBlock(Alpha));
         }
     }
 }
