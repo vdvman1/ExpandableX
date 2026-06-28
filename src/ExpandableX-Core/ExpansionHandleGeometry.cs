@@ -91,15 +91,17 @@ namespace ExpandableX.Core
 
         /// <summary>
         /// The face-handle closest to <paramref name="cursorWorld"/> within the hit radius, for the selected
-        /// building (its whole network). There is one handle per face — grow vs shrink is decided by the
-        /// drag direction, not by which of its (visual) caps the cursor is nearest — so a hit on either cap
-        /// counts as grabbing that one handle. False when no handle is under the cursor.
+        /// building (its whole network). There is one handle per face; a hit on either of its caps grabs it.
+        /// <paramref name="grow"/> reports which cap the cursor was nearest (true = grow, false = shrink): a
+        /// drag picks its direction by projection regardless, but a click with no drag uses this. False when
+        /// no handle is under the cursor.
         /// </summary>
         public static bool TryHitTest(
             IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel selected,
-            float3 cursorWorld, out ExpansionHandle hit)
+            float3 cursorWorld, out ExpansionHandle hit, out bool grow)
         {
             hit = default;
+            grow = true;
             float bestDistanceSq = float.MaxValue;
             bool found = false;
 
@@ -109,17 +111,23 @@ namespace ExpandableX.Core
                 float radius = HitRadiusTiles * TileWorldLength(handle.Position, handle.Face);
                 float radiusSq = radius * radius;
 
-                // Each direction's hit zone is the segment from the face edge out to its cap; either segment
-                // of a both-directions face grabs the single handle. Measuring along the segment (not just the
-                // far cap point) is what disambiguates a concave corner — see HitNearDistance.
-                bool near =
-                    (handle.CanGrow && CloserToHandle(handle, lateral, cursorWorld, radiusSq, ref bestDistanceSq))
-                    | (handle.CanShrink && CloserToHandle(handle, -lateral, cursorWorld, radiusSq, ref bestDistanceSq));
-
-                if (near)
+                // Each direction's hit zone is the segment from the face edge out to its cap. A both-directions
+                // face shows two caps (grow nudged one way, shrink the other); test each and keep whichever is
+                // globally nearest, recording its direction in <paramref name="grow"/>. A drag picks its own
+                // direction by projection, but a click (no drag) uses the cap the cursor was on. Measuring
+                // along the segment (not just the far cap point) is what disambiguates a concave corner.
+                if (handle.CanGrow && CloserToHandle(handle, lateral, cursorWorld, radiusSq, ref bestDistanceSq))
                 {
                     hit = handle;
                     found = true;
+                    grow = true;
+                }
+
+                if (handle.CanShrink && CloserToHandle(handle, -lateral, cursorWorld, radiusSq, ref bestDistanceSq))
+                {
+                    hit = handle;
+                    found = true;
+                    grow = false;
                 }
             }
 

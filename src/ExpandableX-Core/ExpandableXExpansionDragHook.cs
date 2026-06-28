@@ -24,7 +24,9 @@ namespace ExpandableX.Core
     /// gives both direction and magnitude — drag out grows, drag in (past the building) shrinks, and crossing
     /// zero flips between them mid-drag — each gated by what the face allows (<see cref="ExpansionHandle.CanGrow"/>
     /// / <see cref="ExpansionHandle.CanShrink"/>). Release commits via the chain methods (one undoable action,
-    /// clamped + predicate-checked); Esc / right-click cancels.
+    /// clamped + predicate-checked); Esc / right-click cancels. A quick click (held under a short threshold,
+    /// no drag) changes by a single tile in the direction of the cap clicked — grow or shrink — so a one-tile
+    /// change needs no drag; a longer hold that never drags commits nothing.
     ///
     /// First cut, network layouts only. Follow-ups: static-sequence drag (cutter steps); a true ghost-piece
     /// preview (currently placeholder caps along the target tiles); and a cell-based hit-test (cursor tile →
@@ -34,6 +36,11 @@ namespace ExpandableX.Core
     {
         // TUNABLE: sanity cap on tiles per single drag.
         private const int MaxDragTiles = 64;
+
+        // TUNABLE: longest a press may be held (seconds) and still count as a click (grow/shrink one tile) on
+        // release. The game's input exposes no click-vs-hold distinction, so we time it ourselves by summing
+        // FrameDrawOptions.DeltaTime while held; a longer hold that never drags commits nothing.
+        private const float ClickHoldThreshold = 0.3f;
 
         private const string PressAction = "mass-selection.select-base";
         private const string CancelAction = "global.cancel";
@@ -52,6 +59,16 @@ namespace ExpandableX.Core
         private ExpansionHandle _handle;
         private bool _grow;
         private int _magnitude;
+
+        // Whether the current gesture ever dragged out at least one tile — lets a release at zero magnitude
+        // tell a plain click (grow one tile) from a drag taken back to zero (cancel).
+        private bool _dragged;
+
+        // Seconds the press has been held (summed FrameDrawOptions.DeltaTime), and which cap the press landed
+        // on (true = grow, false = shrink). A release under ClickHoldThreshold that never dragged commits one
+        // tile in this direction.
+        private float _heldTime;
+        private bool _clickGrow;
 
         public ExpandableXExpansionDragHook(ExpandableXRegistry registry, ILogger logger)
         {
@@ -126,13 +143,15 @@ namespace ExpandableX.Core
                     return;
                 }
 
-                if (ExpansionHandleGeometry.TryHitTest(map, player, _registry, selected, cursor, out ExpansionHandle hit)
+                if (ExpansionHandleGeometry.TryHitTest(map, player, _registry, selected, cursor, out ExpansionHandle hit, out _clickGrow)
                     && context.ConsumeWasActivated(PressAction))
                 {
                     _dragging = true;
                     _handle = hit;
                     _grow = true;
                     _magnitude = 0;
+                    _dragged = false;
+                    _heldTime = 0f;
                 }
             }
             catch (Exception e)
@@ -178,6 +197,11 @@ namespace ExpandableX.Core
                 _magnitude = 0;
             }
 
+            // Track hold time and whether this gesture ever became a real drag, so a release can tell a quick
+            // click apart from a drag (returned to zero or not) and from a slow hold.
+            _heldTime += options.DeltaTime;
+            _dragged |= _magnitude > 0;
+
             if (context.IsActive(PressAction))
             {
                 if (_magnitude > 0)
@@ -188,7 +212,16 @@ namespace ExpandableX.Core
                 return;
             }
 
-            // Released: realise the drag as one undoable action (the chain methods clamp + predicate-check).
+            // Released. A real drag commits its magnitude. A quick click — pressed and released on the handle
+            // under ClickHoldThreshold without ever dragging out a tile — grows or shrinks by one in the
+            // direction of the cap the cursor was on (TryHitTest's grow flag), so a single tile needs no drag.
+            // A drag returned to zero, or a slow hold that never dragged, commits nothing.
+            if (_magnitude == 0 && !_dragged && _heldTime < ClickHoldThreshold)
+            {
+                _grow = _clickGrow;
+                _magnitude = 1;
+            }
+
             if (_magnitude > 0)
             {
                 Commit(map, player, actions, building);
