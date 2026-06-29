@@ -16,16 +16,23 @@ namespace ExpandableX.Core
     /// </summary>
     public sealed record ShrinkOption(bool Available, string? BlockedReason, IPlayerAction? Action, BuildingId FocusAfter = default);
 
+    /// <summary>How a <see cref="GhostPiece"/> previews: a newly-<see cref="Placed"/> piece, an existing piece whose variant is <see cref="Changed"/> (e.g. a connector fusing to a join), or one that will be <see cref="Removed"/>.</summary>
+    public enum GhostKind { Placed, Changed, Removed }
+
+    /// <summary>One previewed piece of an in-progress grow/shrink — a building definition at a transform, drawn as a blueprint ghost coloured by its <see cref="Kind"/> (new placements vs. existing pieces whose connectors change to joins vs. removals).</summary>
+    public readonly record struct GhostPiece(IBuildingDefinition Definition, GlobalTileTransform Transform, GhostKind Kind);
+
     /// <summary>
     /// The result of forward-simulating a multi-tile grow along one face (the basis for drag-handle
     /// expansion, issue #5 / ADR-0014): how many tiles can actually be added — <see cref="Tiles"/>,
     /// clamped at the first blocked cell, 0 if not even one fits — the single combined undoable action
-    /// that adds exactly that many (null when <see cref="Tiles"/> is 0), and <see cref="BlockedReason"/>,
-    /// the reason the chain stopped short of the request (null when the full request was satisfied or it
-    /// simply ran out of empty space without an error). A drag previews <see cref="Tiles"/> ghost pieces
-    /// and surfaces <see cref="BlockedReason"/> at the clamp.
+    /// that adds exactly that many (null when <see cref="Tiles"/> is 0 or the caller asked not to build it),
+    /// and <see cref="BlockedReason"/>, the reason the chain stopped short of the request (null when the full
+    /// request was satisfied or it simply ran out of empty space without an error). <see cref="Ghosts"/> are
+    /// the clamped preview pieces for the drag — the new placements plus the existing pieces whose variant
+    /// changes (connectors fusing to joins) — so previewing them inherently respects the blocked extent.
     /// </summary>
-    public sealed record GrowChainResult(int Tiles, IPlayerAction? Action, string? BlockedReason);
+    public sealed record GrowChainResult(int Tiles, IPlayerAction? Action, string? BlockedReason, IReadOnlyList<GhostPiece> Ghosts);
 
     /// <summary>
     /// The result of forward-simulating a multi-tile inward shrink from a removable end (the inward-drag
@@ -233,18 +240,18 @@ namespace ExpandableX.Core
         /// </summary>
         public static GrowChainResult GrowChainFor(
             IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel building,
-            TileDirection face, int maxTiles)
+            TileDirection face, int maxTiles, bool buildAction = true)
         {
             if (maxTiles <= 0 || !TryResolveNetworkPiece(registry, building, out var set, out var worldFaces))
             {
-                return new GrowChainResult(0, null, null);
+                return new GrowChainResult(0, null, null, []);
             }
 
             // Only a face that currently carries a gameplay/disabled role can grow; a Join already abuts a
             // same-building neighbour, and a face with no slot has no connector to carry out.
             if (!worldFaces.TryGetValue(face, out SlotRole carriedRole) || carriedRole == SlotRole.Join)
             {
-                return new GrowChainResult(0, null, "cannot grow from this face");
+                return new GrowChainResult(0, null, "cannot grow from this face", []);
             }
 
             NetworkCandidate.TryReadFrom(registry, building.Transform.Position, out NetworkCandidate? network);
@@ -294,18 +301,18 @@ namespace ExpandableX.Core
             {
                 if (TryBuildChainAction(
                         map, executor, registry, set, building, worldFaces, rotation, face, carriedRole,
-                        path, count, network, out IPlayerAction? action, out string? reason))
+                        path, count, network, buildAction, out IPlayerAction? action, out string? reason, out IReadOnlyList<GhostPiece> ghosts))
                 {
                     // Surface a reason only when we couldn't satisfy the full request: a hard occupancy
                     // error on the first tile, or the predicate that forced us to stop short.
                     string? blocked = count < maxTiles ? (clampReason ?? reason) : null;
-                    return new GrowChainResult(count, action, blocked);
+                    return new GrowChainResult(count, action, blocked, ghosts);
                 }
 
                 clampReason ??= reason;
             }
 
-            return new GrowChainResult(0, null, clampReason ?? "no valid grow");
+            return new GrowChainResult(0, null, clampReason ?? "no valid grow", []);
         }
 
         /// <summary>
@@ -324,10 +331,12 @@ namespace ExpandableX.Core
             BuildingModel building, IReadOnlyDictionary<TileDirection, SlotRole> worldFaces,
             GridRotation rotation, TileDirection face, SlotRole carriedRole,
             IReadOnlyList<(GlobalTileCoordinate Pos, bool IsNew)> path, int count,
-            NetworkCandidate? network, out IPlayerAction? action, out string? reason)
+            NetworkCandidate? network, bool buildAction,
+            out IPlayerAction? action, out string? reason, out IReadOnlyList<GhostPiece> ghosts)
         {
             action = null;
             reason = null;
+            ghosts = [];
 
             // Source: the grown face becomes a Join (it now abuts the first chain tile).
             var sourceWorld = new Dictionary<TileDirection, SlotRole>(worldFaces) { [face] = SlotRole.Join };
@@ -491,6 +500,22 @@ namespace ExpandableX.Core
                     reason = violation;
                     return false;
                 }
+            }
+
+            // Everything the chain changes, for the drag preview to render as ghosts: the new pieces (Placed),
+            // and the existing pieces whose variant changes — the grown source and every fused / pass-through
+            // neighbour (Changed, e.g. a connector becoming a join). The Changed ghosts let the player see the
+            // connector→join changes happening on adjacent pieces alongside the new ones.
+            ghosts = [
+                new GhostPiece(sourceDefinition, new GlobalTileTransform(building.Transform.Position, sourceRotation), GhostKind.Changed),
+                ..swaps.Select(swap => new GhostPiece(swap.Def, new GlobalTileTransform(swap.Building.Transform.Position, swap.Rot), GhostKind.Changed)),
+                ..places.Select(place => new GhostPiece(place.Def, new GlobalTileTransform(place.Pos, place.Rot), GhostKind.Placed))
+            ];
+
+            // The caller may only want the validated ghosts (preview / liveness), not the undoable action.
+            if (!buildAction)
+            {
+                return true;
             }
 
             // One combined undoable action: swap the source to its Join'd variant, swap each modified existing
@@ -706,7 +731,7 @@ namespace ExpandableX.Core
                 // grow-candidate face that the single-tile path rejected.
                 bool canGrow = growable.TryGetValue(direction, out bool available)
                     && (available
-                        || GrowChainFor(map, executor, registry, building, direction, GrowLivenessProbeTiles).Tiles > 0);
+                        || GrowChainFor(map, executor, registry, building, direction, GrowLivenessProbeTiles, buildAction: false).Tiles > 0);
                 bool canShrink = shrinkFace == direction;
                 if (canGrow || canShrink)
                 {

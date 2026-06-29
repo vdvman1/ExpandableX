@@ -244,12 +244,19 @@ namespace ExpandableX.Core
 
             if (context.IsActive(PressAction))
             {
-                // The placeholder preview draws one cap per grown tile, which only matches the network chain;
-                // a static sequence step isn't a per-tile extent, so skip it there (no preview until the real
-                // ghost renderer lands).
+                // Preview the would-be change while held — network only (a static sequence step isn't a
+                // per-tile extent). Grow renders real blueprint ghosts of the clamped new pieces; shrink still
+                // uses the placeholder caps for now.
                 if (_magnitude > 0 && IsDynamic(building))
                 {
-                    DrawPreview(options, building);
+                    if (_grow)
+                    {
+                        DrawGrowGhosts(options, map, player, building);
+                    }
+                    else
+                    {
+                        DrawPreview(options, building);
+                    }
                 }
 
                 return;
@@ -374,9 +381,38 @@ namespace ExpandableX.Core
             && placement.Set.Layout is Layout.Dynamic;
 
         /// <summary>
-        /// Placeholder preview: a faint cap at each target tile so the drag extent is visible. (Follow-up:
-        /// render the actual would-be piece ghosts via the blueprint renderer.) Shows the raw drag magnitude;
-        /// the commit clamps to what's reachable.
+        /// Preview a grow as the game's own blueprint ghosts: forward-simulate the clamped chain *without*
+        /// building the undoable action, and render each would-be new piece through the placement-ghost
+        /// renderer (<see cref="SmartBuildingBlueprintRenderer"/>) in the valid-placement colour. Because the
+        /// chain clamps to what actually fits and validates, the ghosts show exactly what a release would
+        /// place — so the preview respects the blocked extent for free.
+        /// </summary>
+        private void DrawGrowGhosts(FrameDrawOptions options, IMapModel map, Player player, BuildingModel building)
+        {
+            GrowChainResult grown = NetworkExpansionEngine.GrowChainFor(
+                map, player, _registry, building, _handle.Face, _magnitude, buildAction: false);
+            if (grown.Ghosts.Count == 0)
+            {
+                return;
+            }
+
+            SmartBuildingBlueprintRenderer.Draw(
+                options,
+                grown.Ghosts.Select(g => new SmartBuildingBlueprintRenderer.DrawData(g.Definition, g.Transform, GhostAllowability(g.Kind))).ToArray());
+        }
+
+        /// <summary>Maps a preview piece's kind to the game's placement colour: a new placement is green, an existing piece whose variant changes (a "valid replacement", e.g. a connector becoming a join) is amber, a removal is red.</summary>
+        private static PlacementAllowability GhostAllowability(GhostKind kind) => kind switch
+        {
+            GhostKind.Changed => PlacementAllowability.ValidPlacementButDisplaysWarning,
+            GhostKind.Removed => PlacementAllowability.InvalidPlacement,
+            _ => PlacementAllowability.ValidPlacement,
+        };
+
+        /// <summary>
+        /// Placeholder shrink preview: a faint cap at each end tile that would be peeled back. (Grow now
+        /// renders real ghosts — see <see cref="DrawGrowGhosts"/>; converting shrink to ghosts is a follow-up.)
+        /// Shows the raw drag magnitude; the commit clamps to what's reachable.
         /// </summary>
         private void DrawPreview(FrameDrawOptions options, BuildingModel building)
         {
