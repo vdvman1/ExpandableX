@@ -70,7 +70,7 @@ namespace ExpandableX.Core
         public static float TileWorldLength(GlobalTileCoordinate position, TileDirection face) =>
             math.distance((float3)position.Move(face).ToCenter_W(), (float3)position.ToCenter_W());
 
-        /// <summary>Draw one belt-cap at <paramref name="center"/>, oriented along <paramref name="face"/>, via the game's instanced UI mesh renderer.</summary>
+        /// <summary>Draw one belt-cap at <paramref name="center"/>, oriented along <paramref name="face"/>, via the game's UI mesh renderer.</summary>
         public static void DrawCap(
             FrameDrawOptions options, LODMeshAsset[] caps, MaterialReference material,
             WorldCoordinate center, TileDirection face, float alpha = Alpha)
