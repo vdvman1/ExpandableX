@@ -40,9 +40,11 @@ namespace ExpandableX.Core
     /// removed — <see cref="Tiles"/>, clamped, 0 if none — the single combined undoable action that removes
     /// exactly that many and folds the grabbed end's leading role onto the survivor, <see cref="BlockedReason"/>
     /// (the predicate/realisation reason a longer shrink was refused, null when it simply ran out of spine),
-    /// and <see cref="FocusAfter"/>, the surviving piece the focus should move to once the shrink settles.
+    /// <see cref="Ghosts"/>, the clamped preview pieces (the end pieces being removed, plus the folded
+    /// survivor in its new variant), and <see cref="FocusAfter"/>, the surviving piece the focus should move
+    /// to once the shrink settles.
     /// </summary>
-    public sealed record ShrinkChainResult(int Tiles, IPlayerAction? Action, string? BlockedReason, BuildingId FocusAfter = default);
+    public sealed record ShrinkChainResult(int Tiles, IPlayerAction? Action, string? BlockedReason, IReadOnlyList<GhostPiece> Ghosts, BuildingId FocusAfter = default);
 
     /// <summary>
     /// Computes directed grow/shrink moves for a placed <see cref="Layout.Dynamic"/> piece and builds the
@@ -555,21 +557,22 @@ namespace ExpandableX.Core
         /// connected (leaf removals can't split it).
         /// </summary>
         public static ShrinkChainResult ShrinkChainFor(
-            IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel building, int maxTiles)
+            IMapModel map, Player executor, ExpandableXRegistry registry, BuildingModel building, int maxTiles,
+            bool buildAction = true)
         {
             if (maxTiles <= 0 || !TryResolveNetworkPiece(registry, building, out var set, out var worldFaces))
             {
-                return new ShrinkChainResult(0, null, null);
+                return new ShrinkChainResult(0, null, null, []);
             }
 
             var joinFaces = worldFaces.Where(f => f.Value == SlotRole.Join).Select(f => f.Key).ToList();
             if (joinFaces.Count == 0)
             {
-                return new ShrinkChainResult(0, null, null); // a singleton is already minimal
+                return new ShrinkChainResult(0, null, null, []); // a singleton is already minimal
             }
             if (joinFaces.Count != 1)
             {
-                return new ShrinkChainResult(0, null, "only an end piece (one join) can shrink");
+                return new ShrinkChainResult(0, null, "only an end piece (one join) can shrink", []);
             }
 
             // The role carried back to the surviving end: the grabbed end's leading (outward) role rides
@@ -661,23 +664,36 @@ namespace ExpandableX.Core
                     }
                 }
 
-                List<IPlayerAction> actions = [
-                    ..steps.Take(count).Select(remove => new ExpandableXRemoveBuildingAction(
-                        map, executor, remove.Remove.Id, remove.Remove.Definition, remove.Remove.Transform, remove.Remove.Configuration)),
-                    new ExpandableXSwapVariantAction(
-                        map, executor, step.Survivor.Id,
-                        step.Survivor.Transform,
-                        new GlobalTileTransform(step.Survivor.Transform.Position, survivorRotation),
-                        step.Survivor.Configuration, step.Survivor.Definition, survivorDefinition)
+                // Preview ghosts: the end pieces being peeled back (Removed → red) and the folded survivor in
+                // its new variant (Changed → amber, where the carried role lands).
+                List<GhostPiece> ghosts = [
+                    ..steps.Take(count).Select(remove => new GhostPiece(remove.Remove.Definition, remove.Remove.Transform, GhostKind.Removed)),
+                    new GhostPiece(survivorDefinition, new GlobalTileTransform(step.Survivor.Transform.Position, survivorRotation), GhostKind.Changed)
                 ];
+
+                // The caller may only want the validated ghosts (preview), not the undoable action.
+                IPlayerAction? action = null;
+                if (buildAction)
+                {
+                    List<IPlayerAction> actions = [
+                        ..steps.Take(count).Select(remove => new ExpandableXRemoveBuildingAction(
+                            map, executor, remove.Remove.Id, remove.Remove.Definition, remove.Remove.Transform, remove.Remove.Configuration)),
+                        new ExpandableXSwapVariantAction(
+                            map, executor, step.Survivor.Id,
+                            step.Survivor.Transform,
+                            new GlobalTileTransform(step.Survivor.Transform.Position, survivorRotation),
+                            step.Survivor.Configuration, step.Survivor.Definition, survivorDefinition)
+                    ];
+                    action = new CombinedUndoablePlayerAction(actions);
+                }
 
                 // Surface a reason only when a longer shrink was actually refused (predicate/realisation);
                 // simply running out of spine (a shorter chain than requested) is not an error.
                 string? blocked = count < steps.Count ? lastReason : null;
-                return new ShrinkChainResult(count, new CombinedUndoablePlayerAction(actions), blocked, step.Survivor.Id);
+                return new ShrinkChainResult(count, action, blocked, ghosts, step.Survivor.Id);
             }
 
-            return new ShrinkChainResult(0, null, lastReason, default);
+            return new ShrinkChainResult(0, null, lastReason, [], default);
         }
 
         /// <summary>
