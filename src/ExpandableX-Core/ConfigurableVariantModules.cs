@@ -166,67 +166,12 @@ namespace ExpandableX.Core
                 yield return new HUDSidePanelModuleActionButtons.Data(expandButtons);
             }
 
-            // Network-model grow/shrink (the AND gate): a grow button per growable face plus a shrink
-            // button on a removable end piece, driven by NetworkExpansionEngine. Each option carries a
-            // ready-to-run undoable action; clicking just schedules it (like SwapTo). These per-face
-            // buttons are the stepping stone to drag handles (ADR-0002). Needs the session managers, so
-            // skip the section until they're captured.
-            Player executor = _registry.LocalPlayer;
-            PlayerActionManager playerActions = _registry.PlayerActions;
-            if (executor != null && playerActions != null && set.Layout is Layout.Dynamic)
-            {
-                var growButtons = new List<PlacementKeybindingHintData>();
-                foreach (GrowOption grow in NetworkExpansionEngine.GrowOptionsFor(map, executor, _registry, building))
-                {
-                    // Per-iteration locals are safe to capture (see the slot loop); playerActions is
-                    // method-scope and never reassigned.
-                    IPlayerAction? action = grow.Action;
-                    bool enabled = grow.Available && action != null;
-                    growButtons.Add(new PlacementKeybindingHintData
-                    {
-                        OverrideTitle = new RawText(enabled ? $"Grow {grow.Face}" : $"Grow {grow.Face} — {grow.BlockedReason}"),
-                        ActiveIf = () => enabled,
-                        Handler = () =>
-                        {
-                            if (enabled && action != null)
-                            {
-                                playerActions.TryScheduleAction(action);
-                            }
-                        },
-                    });
-                }
-
-                if (growButtons.Count > 0)
-                {
-                    yield return new HUDSidePanelModuleInfoText.Data(new RawText("Grow"));
-                    yield return new HUDSidePanelModuleActionButtons.Data(growButtons);
-                }
-
-                ShrinkOption? shrink = NetworkExpansionEngine.ShrinkOptionFor(map, executor, _registry, building);
-                if (shrink != null)
-                {
-                    IPlayerAction? shrinkAction = shrink.Action;
-                    bool shrinkEnabled = shrink.Available && shrinkAction != null;
-                    yield return new HUDSidePanelModuleActionButtons.Data(new[]
-                    {
-                        new PlacementKeybindingHintData
-                        {
-                            OverrideTitle = new RawText(shrinkEnabled ? "Shrink (remove this piece)" : $"Shrink — {shrink.BlockedReason}"),
-                            ActiveIf = () => shrinkEnabled,
-                            Handler = () =>
-                            {
-                                if (shrinkEnabled && shrinkAction != null && playerActions.TryScheduleAction(shrinkAction))
-                                {
-                                    // Move focus to the surviving neighbour once the shrink settles, so
-                                    // configuring continues on the remaining network (the removed end was
-                                    // the focus). Applied by the selection manager on the membership change.
-                                    _registry.NetworkSelection?.RequestFocusAfterChange(shrink.FocusAfter);
-                                }
-                            },
-                        },
-                    });
-                }
-            }
+            // Network-model (Dynamic) grow/shrink is now driven entirely by the drag handles (issue #5 /
+            // ADR-0014): click or drag a face handle to grow, drag/click inward on an end to shrink. The
+            // per-face "Grow {face}" / "Shrink" HUD buttons that used to live here were always a stepping
+            // stone and have been removed. (The sequence expand/shrink buttons above stay until static-layout
+            // drag lands; NetworkExpansionEngine.GrowOptionsFor / ShrinkOptionFor remain — the handles' draw
+            // and liveness paths use them.)
         }
 
         private static string DescribeOption(ExpansionOption option)
@@ -314,7 +259,7 @@ namespace ExpandableX.Core
             // action system runs it at a safe point and records it on the undo stack; its reverse swaps back.
             var transform = new GlobalTileTransform(building.Transform.Position, targetRotation);
             var swap = new ExpandableXSwapVariantAction(
-                map, executor, building.Id, transform, building.Configuration, building.Definition, targetDef);
+                map, executor, building.Id, building.Transform, transform, building.Configuration, building.Definition, targetDef);
             playerActions.TryScheduleAction(swap);
 
             _logger.Info.Log($"ExpandableX-Core: slot change: scheduled swap {currentDefName} -> {targetDefName}");

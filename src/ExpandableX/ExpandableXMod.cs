@@ -78,16 +78,19 @@ public class ExpandableXMod : IMod
         // logs a benign "not found"; it's gated off in square play anyway. The destroyer is shared.
         var destroyer = new Layout.Static("Cutter.HalfDestroyer", NoSlotPiece("CutterHalfInternalVariant"));
         var cutter = new Layout.Static("Cutter.TwoOutput", NoSlotPiece("CutterDefaultInternalVariant"));
+        // The mirrored 2-output cutter (the game's own mirror of CutterDefaultInternalVariant): same input
+        // cell + face, second output flipped to the opposite side — used to grow the destroyer the other way.
+        var cutterMirrored = new Layout.Static("Cutter.TwoOutputMirrored", NoSlotPiece("CutterDefaultInternalVariantMirrored"));
         var hex3 = new Layout.Static("Cutter.Hex3", NoSlotPiece("Hex3Cutter")); // TODO(hex): unbuilt
         var hex6 = new Layout.Static("Cutter.Hex6", NoSlotPiece("Hex6Cutter")); // TODO(hex): unbuilt
 
         ExpandableXRegistry.Instance.Register(new Registration(
             RegistrationId: "Cutter",
-            Layouts: new Layout[] { destroyer, cutter, hex3, hex6 },
+            Layouts: new Layout[] { destroyer, cutter, cutterMirrored, hex3, hex6 },
             Expansions: new[]
             {
                 Expand.Sequence(
-                    TileDirection.East,
+                    TileDirection.North,
                     new[]
                     {
                         // Each step is gated on its own building's research: expanding INTO a step (or
@@ -96,6 +99,19 @@ public class ExpandableXMod : IMod
                         Expand.Step(destroyer, ExpansionConditions.When(
                             () => IsResearched("CBCutting_HalfDestroyer"), "half-destroyer research")),
                         Expand.Step(cutter, ExpansionConditions.When(
+                            () => IsResearched("CBCutting_FullCutter"), "cutter research")),
+                    },
+                    conditions: new[] { ExpansionConditions.When(() => ShapeParts() == 4, "square shapes") }),
+
+                // The same square sequence the other way: grow South into the mirrored cutter, so the second
+                // output lands on the opposite side while the input keeps its cell + face (no re-anchoring).
+                Expand.Sequence(
+                    TileDirection.South,
+                    new[]
+                    {
+                        Expand.Step(destroyer, ExpansionConditions.When(
+                            () => IsResearched("CBCutting_HalfDestroyer"), "half-destroyer research")),
+                        Expand.Step(cutterMirrored, ExpansionConditions.When(
                             () => IsResearched("CBCutting_FullCutter"), "cutter research")),
                     },
                     conditions: new[] { ExpansionConditions.When(() => ShapeParts() == 4, "square shapes") }),

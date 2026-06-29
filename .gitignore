@@ -431,7 +431,8 @@ FodyWeavers.xsd
 # Project-specific: local reference copies of third-party docs (not redistributed)
 docs/Shapez 2 Modding Documentation _ Notion.html
 docs/Shapez 2 Modding Documentation _ Notion_files/
+docs/Mod Support - Art - How to create an asset.html
+docs/Mod Support - Art - How to create an asset_files/
 
 # Project-specific: decompiled game assemblies for local research only (not redistributed)
 .decompiled/
-

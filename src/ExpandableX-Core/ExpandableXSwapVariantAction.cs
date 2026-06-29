@@ -4,15 +4,23 @@ using Game.Core.Coordinates;
 namespace ExpandableX.Core
 {
     /// <summary>
-    /// Undoable swap of a building to another variant definition, preserving its id, transform, and
-    /// configuration (id-as-truth, ADR-0008). Scheduled via the session's <c>PlayerActionManager</c>
-    /// so it runs at a safe point and lands on the undo stack. Its reverse swaps back to the previous
-    /// definition, so undo restores the prior variant.
+    /// Undoable swap of a building to another variant definition, preserving its id and configuration
+    /// (id-as-truth, ADR-0008). Scheduled via the session's <c>PlayerActionManager</c> so it runs at a
+    /// safe point and lands on the undo stack.
+    ///
+    /// The swap carries <b>both</b> the from- and to-transforms because a variant's orientation is realised
+    /// via <see cref="GridRotation"/> (canonicalisation can place the same world-face roles at a different
+    /// rotation), so the destination rotation routinely differs from the source's. The reverse swaps back to
+    /// the <i>from</i> definition <b>at the from transform</b> — restoring the original rotation, not the
+    /// grown one — so undo returns the piece to exactly its prior state (connectors and all). Passing a
+    /// single transform here was a bug: undo restored the right definition at the wrong rotation, leaving the
+    /// surviving piece's connectors pointing the wrong way.
     /// </summary>
     internal sealed class ExpandableXSwapVariantAction : PlayerAction
     {
         private readonly BuildingId _buildingId;
-        private readonly GlobalTileTransform _transform;
+        private readonly GlobalTileTransform _fromTransform;
+        private readonly GlobalTileTransform _toTransform;
         private readonly IBuildingConfiguration _configuration;
         private readonly IBuildingDefinition _fromDefinition;
         private readonly IBuildingDefinition _toDefinition;
@@ -21,14 +29,16 @@ namespace ExpandableX.Core
             IMapModel map,
             Player executor,
             in BuildingId buildingId,
-            in GlobalTileTransform transform,
+            in GlobalTileTransform fromTransform,
+            in GlobalTileTransform toTransform,
             IBuildingConfiguration configuration,
             IBuildingDefinition fromDefinition,
             IBuildingDefinition toDefinition)
             : base(map, executor)
         {
             _buildingId = buildingId;
-            _transform = transform;
+            _fromTransform = fromTransform;
+            _toTransform = toTransform;
             _configuration = configuration;
             _fromDefinition = fromDefinition;
             _toDefinition = toDefinition;
@@ -48,7 +58,7 @@ namespace ExpandableX.Core
             bool wasSelected = selection.Any(b => b.Id == _buildingId);
 
             Map.DeleteBuilding(in _buildingId);
-            BuildingModel created = Map.CreateBuilding(_toDefinition, in _transform, in _buildingId, _configuration);
+            BuildingModel created = Map.CreateBuilding(_toDefinition, in _toTransform, in _buildingId, _configuration);
 
             if (wasSelected)
             {
@@ -59,9 +69,10 @@ namespace ExpandableX.Core
                 selection.Set(new[] { created });
             }
 
-            // Undo: swap back to the definition we came from (same id/transform/config).
+            // Undo: swap back to the definition and transform we came from (same id/config), so the original
+            // rotation is restored too. The reverse's from/to are this action's to/from.
             reverseAction = new ExpandableXSwapVariantAction(
-                Map, Executor, in _buildingId, in _transform, _configuration, _toDefinition, _fromDefinition);
+                Map, Executor, in _buildingId, in _toTransform, in _fromTransform, _configuration, _toDefinition, _fromDefinition);
         }
     }
 }
