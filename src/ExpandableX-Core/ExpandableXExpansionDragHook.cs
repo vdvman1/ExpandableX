@@ -1,5 +1,6 @@
 extern alias monomod;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Game.Core.Coordinates;
@@ -29,10 +30,11 @@ namespace ExpandableX.Core
     /// no drag) changes by a single tile in the direction of the cap clicked — grow or shrink — so a one-tile
     /// change needs no drag; a longer hold that never drags commits nothing.
     ///
-    /// Network layouts grow/shrink a multi-tile chain; static sequence layouts (cutter etc.) step one stop
-    /// per gesture (multi-step-per-drag is a follow-up). Other follow-ups: a true ghost-piece preview
-    /// (currently placeholder caps along the target tiles, network only); and a cell-based hit-test (cursor
-    /// tile → adjacent faces) instead of enumerating the whole network each frame. Fails open throughout.
+    /// Network layouts grow/shrink a multi-tile chain, previewed as the game's blueprint ghosts of the
+    /// clamped result (new pieces blue, connector→join changes amber, removals red); static sequence layouts
+    /// (cutter etc.) step one stop per gesture (multi-step-per-drag is a follow-up). Other follow-ups: a
+    /// cell-based hit-test (cursor tile → adjacent faces) instead of enumerating the whole network each frame.
+    /// Fails open throughout.
     /// </summary>
     internal sealed class ExpandableXExpansionDragHook : IDisposable
     {
@@ -244,12 +246,15 @@ namespace ExpandableX.Core
 
             if (context.IsActive(PressAction))
             {
-                // The placeholder preview draws one cap per grown tile, which only matches the network chain;
-                // a static sequence step isn't a per-tile extent, so skip it there (no preview until the real
-                // ghost renderer lands).
+                // Preview the would-be change while held — network only (a static sequence step isn't a
+                // per-tile extent). Both directions render the game's blueprint ghosts of the clamped result:
+                // new pieces blue, changed (connector→join) pieces amber, removed pieces red.
                 if (_magnitude > 0 && IsDynamic(building))
                 {
-                    DrawPreview(options, building);
+                    var ghosts = _grow
+                        ? NetworkExpansionEngine.GrowChainFor(map, player, _registry, building, _handle.Face, _magnitude, buildAction: false).Ghosts
+                        : NetworkExpansionEngine.ShrinkChainFor(map, player, _registry, building, _magnitude, buildAction: false).Ghosts;
+                    DrawGhosts(options, ghosts);
                 }
 
                 return;
@@ -374,34 +379,30 @@ namespace ExpandableX.Core
             && placement.Set.Layout is Layout.Dynamic;
 
         /// <summary>
-        /// Placeholder preview: a faint cap at each target tile so the drag extent is visible. (Follow-up:
-        /// render the actual would-be piece ghosts via the blueprint renderer.) Shows the raw drag magnitude;
-        /// the commit clamps to what's reachable.
+        /// Render a chain's would-be pieces as the game's own blueprint ghosts, coloured by kind — the same
+        /// pipeline the game uses for placement previews (<see cref="SmartBuildingBlueprintRenderer"/>). The
+        /// chain methods clamp to what actually fits and validates, so the ghosts show exactly what a release
+        /// will do — the preview respects the blocked extent for free.
         /// </summary>
-        private void DrawPreview(FrameDrawOptions options, BuildingModel building)
+        private static void DrawGhosts(FrameDrawOptions options, IReadOnlyList<GhostPiece> ghosts)
         {
-            if (_registry.SessionTheme is not { } theme)
+            if (ghosts.Count == 0)
             {
                 return;
             }
 
-            VisualThemeBaseResources resources = theme.BaseResources;
-            LODMeshAsset[] caps = _grow ? resources.BeltCapOutput : resources.BeltCapInput;
-            MaterialReference material = resources.UXBuildingBlueprintSpotIndicatorMaterial;
-
-            // Grow previews the new outward tiles; shrink previews the end pieces it would peel back (inward).
-            TileDirection direction = _grow ? _handle.Face : _handle.Face.Opposite;
-            GlobalTileCoordinate tile = _grow
-                ? building.Transform.Position
-                : building.Transform.Position.Move(direction, -1);
-
-            for (int k = 0; k < _magnitude; k++)
-            {
-                tile = tile.Move(direction);
-                WorldCoordinate center = tile.ToCenter_W() + ExpansionHandleGeometry.LiftHeight * WorldVector.Up;
-                ExpansionHandleGeometry.DrawCap(options, caps, material, center, _handle.Face, alpha: 0.5f);
-            }
+            SmartBuildingBlueprintRenderer.Draw(
+                options,
+                ghosts.Select(g => new SmartBuildingBlueprintRenderer.DrawData(g.Definition, g.Transform, GhostAllowability(g.Kind))).ToArray());
         }
+
+        /// <summary>Maps a preview piece's kind to the game's placement colour: a new placement is blue, an existing piece whose variant changes (a "valid replacement", e.g. a connector becoming a join) is amber, a removal is red.</summary>
+        private static PlacementAllowability GhostAllowability(GhostKind kind) => kind switch
+        {
+            GhostKind.Changed => PlacementAllowability.ValidPlacementButDisplaysWarning,
+            GhostKind.Removed => PlacementAllowability.InvalidPlacement,
+            _ => PlacementAllowability.ValidPlacement,
+        };
 
         private static bool TryCursorWorld(Viewport viewport, out float3 cursor)
         {
