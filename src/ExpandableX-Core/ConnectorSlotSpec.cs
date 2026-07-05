@@ -45,7 +45,8 @@ namespace ExpandableX.Core
             SlotRole DefaultRole,
             System.Range Selection,
             ConnectorReference Probe,
-            Func<int, ConnectorReference> ReferenceAt) : ConnectorSlotSpec
+            Func<int, ConnectorReference> ReferenceAt,
+            Func<int, string>? LabelAt = null) : ConnectorSlotSpec
         {
             public override IReadOnlyList<ConnectorSlot> Expand(IConnectorCountResolver resolver)
             {
@@ -55,22 +56,30 @@ namespace ExpandableX.Core
                 for (int i = 0; i < length; i++)
                 {
                     int idx = offset + i;
-                    slots.Add(new ConnectorSlot($"{IdPrefix}_{idx}", AllowedRoles, DefaultRole, ReferenceAt(idx)));
+                    slots.Add(new ConnectorSlot(
+                        $"{IdPrefix}_{idx}", AllowedRoles, DefaultRole, ReferenceAt(idx), LabelAt?.Invoke(idx)));
                 }
                 return slots;
             }
 
             /// <param name="selection">Which visible connectors to cover, e.g. <c>1..3</c>. Null = all (<c>..</c>).</param>
+            /// <param name="labelAt">
+            /// Optional player-facing label per visible index (see <see cref="ConnectorSlot.Label"/>). Only
+            /// meaningful for static layouts; dynamic layouts label by compass direction. Null → the slot's
+            /// id is used as its label.
+            /// </param>
             public static Range Of<T>(
                 string idPrefix,
                 IReadOnlyList<SlotRole> allowedRoles,
                 SlotRole defaultRole,
                 System.Range? selection = null,
-                bool autoSkipInternal = true) where T : class, IBuildingIO
+                bool autoSkipInternal = true,
+                Func<int, string>? labelAt = null) where T : class, IBuildingIO
                 => new(idPrefix, allowedRoles, defaultRole,
                        selection ?? System.Range.All,
                        ConnectorReference.Of<T>(0, autoSkipInternal),
-                       i => ConnectorReference.Of<T>(i, autoSkipInternal));
+                       i => ConnectorReference.Of<T>(i, autoSkipInternal),
+                       labelAt);
         }
     }
 }
