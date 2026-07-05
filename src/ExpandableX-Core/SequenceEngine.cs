@@ -96,6 +96,40 @@ namespace ExpandableX.Core
             options.Add(new ExpansionOption(kind, sequence.Direction, sequence.Steps[target].Layout, null, skipped));
         }
 
+        /// <summary>
+        /// The ordered ladder of reachable destination layouts from <paramref name="currentLayout"/> along one
+        /// <paramref name="kind"/> (expand = forward, shrink = backward) within a single <paramref name="sequence"/>,
+        /// nearest-first. Locked intermediate steps are skipped over — not included, but the scan continues past
+        /// them — so a reachable step beyond a lock still appears (the same skip rule <see cref="OptionsFor"/>
+        /// uses). Empty if the sequence's own conditions are unmet, the current layout isn't in it, or nothing is
+        /// reachable that way. Used by the drag layer to map a footprint-tracking drag onto the right step.
+        /// </summary>
+        public static IReadOnlyList<Layout> ReachableLadder(Expansion.Sequence sequence, Layout currentLayout, ExpansionKind kind)
+        {
+            if (FirstUnmet(sequence.Conditions) is not null)
+            {
+                return Array.Empty<Layout>();
+            }
+
+            int index = IndexOfStep(sequence.Steps, currentLayout);
+            if (index < 0)
+            {
+                return Array.Empty<Layout>();
+            }
+
+            int step = kind == ExpansionKind.Expand ? +1 : -1;
+            var ladder = new List<Layout>();
+            for (int k = index + step; k >= 0 && k < sequence.Steps.Count; k += step)
+            {
+                if (FirstUnmet(sequence.Steps[k].Conditions) is null)
+                {
+                    ladder.Add(sequence.Steps[k].Layout);
+                }
+            }
+
+            return ladder;
+        }
+
         private static string? FirstUnmet(IReadOnlyList<IExpansionCondition> conditions)
         {
             foreach (IExpansionCondition condition in conditions)
