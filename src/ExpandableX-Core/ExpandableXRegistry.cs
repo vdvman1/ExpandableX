@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Game.Core.Rendering.MeshGeneration;
 using ILogger = Core.Logging.ILogger;
 
 namespace ExpandableX.Core
@@ -8,6 +9,17 @@ namespace ExpandableX.Core
         public static ExpandableXRegistry Instance { get; private set; }
 
         public GameMode CurrentMode { get; internal set; }
+
+        /// <summary>
+        /// The session's mesh cache, captured in the buildings phase (<see cref="ExpandableXBuildingsRewirer"/>)
+        /// because the later simulation-systems phase — where variants are synthesised — doesn't expose it.
+        /// Used by <see cref="VariantModelComposer"/> to bake composed models (ADR-0016). Null until captured;
+        /// composition then falls back to cloning the base model.
+        /// </summary>
+        internal IMeshCache? MeshCache { get; set; }
+
+        /// <summary>The session's theme base resources, captured alongside <see cref="MeshCache"/> for the same reason.</summary>
+        internal VisualThemeBaseResources? ThemeResources { get; set; }
 
         /// <summary>The session's player action manager, captured once at session init so slot
         /// changes can be dispatched as undoable actions. Null until a session has started.</summary>

@@ -226,6 +226,27 @@ namespace ExpandableX.Core
             // cataloged against its base def id and synthesises nothing.)
             if (MatchesBase(expansion.ExpandedSlots, variant.SlotState, resolver))
             {
+                // Opt-in (ADR-0016): when the base is an authored superset whose stock model doesn't
+                // match its full connector set, compose the base def's own model too (its bridges would
+                // otherwise be missing — e.g. the AND base's 3rd input). We replace the base def's draw
+                // data in place. Off by default so a placed default singleton (the painter) keeps its
+                // hand-authored model.
+                // The writable CustomData lives on the concrete BuildingDefinition; the base is one we
+                // authored (e.g. ExpandableXAndNetworkBase), so the cast succeeds. If a base ever isn't
+                // (a pre-existing game def), the cast fails and we leave its model untouched — fine, since
+                // ComposeBaseModel should only be set for authored superset bases.
+#pragma warning disable CS0618
+                if (piece.Models is not null && piece.ComposeBaseModel && baseDef is BuildingDefinition writableBase)
+#pragma warning restore CS0618
+                {
+                    IBuildingDrawData? composedBase = ComposeVariantModel(
+                        baseDef.Id.Name, baseDef, baseDef.ConnectorData, piece, expansion, variant, resolver);
+                    if (composedBase is not null)
+                    {
+                        writableBase.CustomData.AttachOrReplace(composedBase);
+                    }
+                }
+
                 return baseDef.Id.Name;
             }
 
@@ -257,6 +278,12 @@ namespace ExpandableX.Core
             BuildingDefinition variantDef = new BuildingDefinition(defId, synthData);
 #pragma warning restore CS0618
 
+            // Opt-in composed model (ADR-0016): when the piece supplies model pieces, bake this
+            // variant's body+bridge model and use it in place of the base's cloned draw data. Needs
+            // the mesh cache + theme the buildings-phase rewirer stashed; absent those (or on any
+            // failure) composedDraw is null and we keep cloning the base model.
+            IBuildingDrawData? composedDraw = ComposeVariantModel(defIdName, baseDef, synthData, piece, expansion, variant, resolver);
+
             foreach (object item in baseDef.CustomData.All)
             {
                 // Connector data lives in BOTH BuildingDefinition.ConnectorData and CustomData
@@ -269,10 +296,20 @@ namespace ExpandableX.Core
                     continue;
                 }
 
+                // When composing, drop the base's model too — the composed one is attached below.
+                if (composedDraw is not null && item is IBuildingDrawData)
+                {
+                    continue;
+                }
+
                 variantDef.CustomData.Attach(item);
             }
 
             variantDef.CustomData.Attach(synthData);
+            if (composedDraw is not null)
+            {
+                variantDef.CustomData.Attach(composedDraw);
+            }
 
             hiddenGroup.AddInternalVariant(variantDef);
             dependencies.Mode.Buildings._DefinitionsById.Add(variantDef.Id, variantDef);
@@ -284,6 +321,45 @@ namespace ExpandableX.Core
             (layout as Layout.Static)?.Simulation?.Invoke(variantDef, simulationSystems, dependencies);
             synthesised++;
             return defIdName;
+        }
+
+        /// <summary>
+        /// Compose this variant's model (ADR-0016) when the piece opted in via <see cref="PieceSpec.Models"/>
+        /// and the mesh cache + theme were captured by the buildings-phase rewirer; otherwise null so the
+        /// caller keeps cloning the base model.
+        /// </summary>
+        private IBuildingDrawData? ComposeVariantModel(
+            string variantIdName,
+            IBuildingDefinition baseDef,
+            IBuildingConnectorData synthData,
+            PieceSpec piece,
+            PieceExpansion expansion,
+            Variant variant,
+            ConnectorDataResolver resolver)
+        {
+            if (piece.Models is not { } models)
+            {
+                return null;
+            }
+
+            if (_registry.MeshCache is not { } meshCache || _registry.ThemeResources is not { } theme)
+            {
+                _logger.Info.Log($"ExpandableX-Core: piece declares model pieces but mesh cache/theme not captured; '{variantIdName}' keeps the cloned base model");
+                return null;
+            }
+
+            if (!baseDef.CustomData.TryGet(out IBuildingDrawData baseDraw))
+            {
+                return null;
+            }
+
+            // A mirrored base (its own MetaBuildingDefinition) composes from the same authored meshes,
+            // reflected by the game's mesh mirror — so one ModelPieceSet serves both the base and its mirror.
+            bool mirrored = baseDef.CustomData.TryGet(out IBuildingMirroringDefinition mirroring) && mirroring.IsMirrored;
+
+            return VariantModelComposer.TryCompose(
+                variantIdName, baseDraw, synthData, expansion.ExpandedSlots, variant.SlotState,
+                resolver, models, meshCache, theme, mirrored, _logger);
         }
 
         /// <summary>

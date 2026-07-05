@@ -1,0 +1,18 @@
+ExpandableX — asset notice
+
+The 3D model files (.fbx) shipped in this folder are derivative works based on
+assets owned by tobspr Games (Shapez 2). They were created from the game's own
+meshes and/or the official Shapez 2 mod art guidelines, then modified for
+ExpandableX's dynamic connector system.
+
+Copyright in the original assets remains with tobspr Games. tobspr officially
+supports modding and provides source files and an art guide for making mod
+assets; we take this as implied permission to use and adapt them here. We are
+not aware of an explicit written license granting this, so if tobspr Games
+requests it, these assets will be promptly removed or replaced.
+
+ExpandableX is an unofficial, fan-made mod and is not affiliated with or
+endorsed by tobspr Games. Shapez 2 and its original assets are (c) tobspr Games.
+
+This notice covers the art assets only; ExpandableX's source code is MIT
+licensed (see the repository LICENSE).
