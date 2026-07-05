@@ -131,6 +131,12 @@
     <None Update="manifest.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+
+    <!-- Ship authored model files (FBX) next to the DLL so ModelMesh.FromFile can load them at
+         runtime via ModDirectoryLocator; the relative Resources/ layout is preserved in the output. -->
+    <None Include="Resources\**\*.fbx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

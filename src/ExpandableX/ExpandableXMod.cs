@@ -6,6 +6,7 @@ using ShapezShifter.Hijack;
 using ShapezShifter.Kit;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using ILogger = Core.Logging.ILogger;
 
 [UsedImplicitly]
@@ -43,8 +44,12 @@ public class ExpandableXMod : IMod
                 1 => "Bottom Fluid",
                 2 => "Right Fluid",
                 _ => $"Fluid {index}",
-            });
+            },
+            models: PainterModels());
 
+        // The mirror reuses the same model set: the framework reflects the authored meshes via the
+        // game's mesh mirror (the mirrored base is its own definition with mirrored connector data), so
+        // no separate mirrored FBX is needed.
         RegisterPainterVariant(
             registrationId: "PainterDefaultVariantMirrored",
             layoutId: "Painter.DefaultMirrored",
@@ -55,7 +60,28 @@ public class ExpandableXMod : IMod
                 1 => "Bottom Fluid",
                 2 => "Left Fluid",
                 _ => $"Fluid {index}",
-            });
+            },
+            models: PainterModels());
+    }
+
+    /// <summary>
+    /// The painter's composed model (ADR-0016): a clean body, a custom static blueprint (keeps the
+    /// roller/hinge the animated main mesh omits), and one fluid-junction bridge reused across all three
+    /// paint junctions — authored canonically (connector at origin facing East), so the framework just
+    /// rotates a copy onto each junction (offset zero; the model's origin is set for rotation-only).
+    /// LOD0-1 are exported; higher LODs reuse the last supplied level until authored. The mirror reuses
+    /// this same set, reflected by the framework. Loaded from the mod's Resources dir at bake time.
+    /// </summary>
+    private static ModelPieceSet PainterModels()
+    {
+        ModFolderLocator painter = ModDirectoryLocator.CreateLocator<ExpandableXMod>()
+            .SubLocator("Resources").SubLocator("Painter");
+
+        return ModelPieceSet
+            .WithBody(ModelMesh.FromFiles(Enumerable.Range(0, 6).Select(i => painter.SubPath($"Main_LOD{i}.fbx")).ToArray()))
+            .Blueprint(ModelMesh.FromFiles(Enumerable.Range(0, 6).Select(i => painter.SubPath($"Blueprint_LOD{i}.fbx")).ToArray()))
+            .Bridge<BuildingFluidJunction>(SlotRole.Enabled, ModelMesh.FromFiles(Enumerable.Range(0, 6).Select(i => painter.SubPath($"FluidConnector_LOD{i}.fbx")).ToArray()))
+            .Build();
     }
 
     /// <summary>
@@ -64,7 +90,8 @@ public class ExpandableXMod : IMod
     /// (Left/Right swap on the mirror), so both share this body.
     /// </summary>
     private static void RegisterPainterVariant(
-        string registrationId, string layoutId, string baseDefinitionId, Func<int, string> paintLabel)
+        string registrationId, string layoutId, string baseDefinitionId, Func<int, string> paintLabel,
+        ModelPieceSet models = null)
     {
         ExpandableXRegistry.Instance.Register(new Registration(
             RegistrationId: registrationId,
@@ -85,7 +112,8 @@ public class ExpandableXMod : IMod
                         LocalPredicates: new[]
                         {
                             SlotPredicates.AtLeastOne(new[] { SlotRole.Enabled }),
-                        }),
+                        },
+                        Models: models),
                     // Each synthesised painter variant is simulated like the stock painter: the framework
                     // attaches an atomic per-definition simulation, we just hand it the base game's own
                     // TopmostPainterSimulation factory (config read off the variant's definition). The
