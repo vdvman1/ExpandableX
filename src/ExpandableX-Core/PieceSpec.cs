@@ -21,12 +21,22 @@ namespace ExpandableX.Core
     /// bridge pieces the framework bakes into each variant's model (CONTEXT.md "Composed model",
     /// ADR-0016). Null keeps today's behaviour: each variant clones the base definition's model.
     /// </param>
+    /// <param name="ComposeBaseModel">
+    /// When true (and <see cref="Models"/> is set), also compose the model of the <b>configurable base</b>
+    /// itself — the "matches-base" combination that otherwise reuses the base definition's own model.
+    /// Set this when the base is an authored superset whose stock/cloned model doesn't match its full
+    /// connector set (e.g. the AND gate's base is cloned from the 2-input AND but carries a 3rd input,
+    /// so that face's bridge would be missing). Leave false when the base is a real placed building whose
+    /// hand-authored model must be preserved (e.g. the painter, whose base is the vanilla painter every
+    /// painter uses).
+    /// </param>
     public sealed record PieceSpec(
         string BaseDefinitionId,
         IReadOnlyList<ConnectorSlotSpec> SlotSpecs,
         IReadOnlyList<ISlotPredicate> LocalPredicates,
         IReadOnlyDictionary<string, string>? VariantOverrides = null,
-        ModelPieceSet? Models = null)
+        ModelPieceSet? Models = null,
+        bool ComposeBaseModel = false)
     {
         private static readonly IReadOnlyDictionary<string, string> NoOverrides = new Dictionary<string, string>();
 

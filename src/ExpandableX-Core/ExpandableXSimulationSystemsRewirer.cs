@@ -226,6 +226,27 @@ namespace ExpandableX.Core
             // cataloged against its base def id and synthesises nothing.)
             if (MatchesBase(expansion.ExpandedSlots, variant.SlotState, resolver))
             {
+                // Opt-in (ADR-0016): when the base is an authored superset whose stock model doesn't
+                // match its full connector set, compose the base def's own model too (its bridges would
+                // otherwise be missing — e.g. the AND base's 3rd input). We replace the base def's draw
+                // data in place. Off by default so a placed default singleton (the painter) keeps its
+                // hand-authored model.
+                // The writable CustomData lives on the concrete BuildingDefinition; the base is one we
+                // authored (e.g. ExpandableXAndNetworkBase), so the cast succeeds. If a base ever isn't
+                // (a pre-existing game def), the cast fails and we leave its model untouched — fine, since
+                // ComposeBaseModel should only be set for authored superset bases.
+#pragma warning disable CS0618
+                if (piece.Models is not null && piece.ComposeBaseModel && baseDef is BuildingDefinition writableBase)
+#pragma warning restore CS0618
+                {
+                    IBuildingDrawData? composedBase = ComposeVariantModel(
+                        baseDef.Id.Name, baseDef, baseDef.ConnectorData, piece, expansion, variant, resolver);
+                    if (composedBase is not null)
+                    {
+                        writableBase.CustomData.AttachOrReplace(composedBase);
+                    }
+                }
+
                 return baseDef.Id.Name;
             }
 
