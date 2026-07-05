@@ -32,8 +32,9 @@ namespace ExpandableX.Core
     ///
     /// Network layouts grow/shrink a multi-tile chain, previewed as the game's blueprint ghosts of the
     /// clamped result (new pieces blue, connector→join changes amber, removals red); static sequence layouts
-    /// (cutter etc.) step one stop per gesture (multi-step-per-drag is a follow-up). Other follow-ups: a
-    /// cell-based hit-test (cursor tile → adjacent faces) instead of enumerating the whole network each frame.
+    /// (cutter etc.) footprint-track (#16) — the drag can cross several stops in one gesture, the building's
+    /// far edge following the cursor, previewed as the target step's ghost. Other follow-ups: a cell-based
+    /// hit-test (cursor tile → adjacent faces) instead of enumerating the whole network each frame.
     /// Fails open throughout.
     /// </summary>
     internal sealed class ExpandableXExpansionDragHook : IDisposable
@@ -239,72 +240,89 @@ namespace ExpandableX.Core
                 _magnitude = 0;
             }
 
-            // Track hold time and whether this gesture ever became a real drag, so a release can tell a quick
-            // click apart from a drag (returned to zero or not) and from a slow hold.
+            // Track hold time and whether this gesture became a real drag, so a release can tell a quick click
+            // apart from a drag (out-and-back or not) and from a slow hold. A network drag counts once it moves
+            // a tile; a static drag counts once the cursor crosses into a different step's tile (which the
+            // round-based magnitude can lag, so it's read from the footprint-tracking target directly).
             _heldTime += options.DeltaTime;
-            _dragged |= _magnitude > 0;
+            if (IsDynamic(building))
+            {
+                _dragged |= _magnitude > 0;
+            }
+            else if (TryStaticSet(building, out PieceVariantSet staticSet))
+            {
+                _dragged |= SequenceTargetForDrag(building, staticSet, cursor) is not null;
+            }
 
             if (context.IsActive(PressAction))
             {
-                // Preview the would-be change while held — network only (a static sequence step isn't a
-                // per-tile extent). Both directions render the game's blueprint ghosts of the clamped result:
-                // new pieces blue, changed (connector→join) pieces amber, removed pieces red.
-                if (_magnitude > 0 && IsDynamic(building))
+                // Preview the would-be change while held, as the game's blueprint ghosts of the clamped result.
+                if (IsDynamic(building))
                 {
-                    var ghosts = _grow
-                        ? NetworkExpansionEngine.GrowChainFor(map, player, _registry, building, _handle.Face, _magnitude, buildAction: false).Ghosts
-                        : NetworkExpansionEngine.ShrinkChainFor(map, player, _registry, building, _magnitude, buildAction: false).Ghosts;
-                    DrawGhosts(options, ghosts);
+                    // Network: the whole chain — new pieces blue, changed (connector→join) pieces amber,
+                    // removed pieces red.
+                    if (_magnitude > 0)
+                    {
+                        var ghosts = _grow
+                            ? NetworkExpansionEngine.GrowChainFor(map, player, _registry, building, _handle.Face, _magnitude, buildAction: false).Ghosts
+                            : NetworkExpansionEngine.ShrinkChainFor(map, player, _registry, building, _magnitude, buildAction: false).Ghosts;
+                        DrawGhosts(options, ghosts);
+                    }
+                }
+                else if (TryStaticSet(building, out PieceVariantSet set))
+                {
+                    // Static sequence (#16): preview the footprint-tracked target step's ghost at the same
+                    // transform — a no-op (cursor still on the current step) draws nothing.
+                    DrawSequenceStepPreview(options, building, set, cursor);
                 }
 
                 return;
             }
 
-            // Released. A real drag commits its magnitude. A quick click — pressed and released on the handle
-            // under ClickHoldThreshold without ever dragging out a tile — grows or shrinks by one in the
-            // direction of the cap the cursor was on (TryHitTest's grow flag), so a single tile needs no drag.
-            // A drag returned to zero, or a slow hold that never dragged, commits nothing.
-            if (_magnitude == 0 && !_dragged && _heldTime < ClickHoldThreshold)
+            // Released. A real drag commits whatever the footprint-tracking / chain result was (an out-and-back
+            // drag lands on the current step / zero magnitude and commits nothing). A quick click — pressed and
+            // released on the handle under ClickHoldThreshold without ever dragging — grows or shrinks by one
+            // step (static) or one tile (network) in the direction of the cap the cursor was on. A slow hold
+            // that never dragged commits nothing.
+            if (_dragged)
+            {
+                Commit(map, player, actions, building, cursor, oneStep: false);
+            }
+            else if (_heldTime < ClickHoldThreshold)
             {
                 _grow = _clickGrow;
                 _magnitude = 1;
-            }
-
-            if (_magnitude > 0)
-            {
-                Commit(map, player, actions, building);
+                Commit(map, player, actions, building, cursor, oneStep: true);
             }
 
             _dragging = false;
         }
 
-        /// <summary>Cursor distance past the face edge along the face axis, in tiles (rounded; + outward, - inward).</summary>
+        /// <summary>
+        /// Cursor distance past the building's current FAR edge along the face axis, in tiles (rounded;
+        /// + outward = grow, - inward = shrink). Measured from the footprint's far edge (its depth along the
+        /// face), not the origin tile, so a multi-tile building (a cutter) measures the drag from where its
+        /// edge actually is; for a 1x1 network piece the far edge is the origin edge, so this is unchanged there.
+        /// </summary>
         private int SignedTiles(BuildingModel building, float3 cursor)
         {
-            float3 center = (float3)building.Transform.Position.ToCenter_W();
-            float3 axis = (float3)building.Transform.Position.Move(_handle.Face).ToCenter_W() - center;
-
-            float tileLength = math.length(axis);
-            if (tileLength < 1e-3f)
-            {
-                return 0;
-            }
-
-            float3 axisUnit = axis / tileLength;
-            float3 faceEdge = center + 0.5f * axis; // boundary between this tile and the neighbour
-            float tiles = math.dot(cursor - faceEdge, axisUnit) / tileLength;
-            return math.clamp((int)math.round(tiles), -MaxDragTiles, MaxDragTiles);
+            float past = CursorDepthAlongFace(building, cursor) - FootprintDepth(building.Definition, building);
+            return math.clamp((int)math.round(past), -MaxDragTiles, MaxDragTiles);
         }
 
-        private void Commit(IMapModel map, Player player, PlayerActionManager actions, BuildingModel building)
+        private void Commit(IMapModel map, Player player, PlayerActionManager actions, BuildingModel building, float3 cursor, bool oneStep)
         {
-            // Static sequence layouts (cutter etc.) step the sequence one stop per gesture; Dynamic network
-            // layouts grow/shrink a multi-tile chain.
-            if (_registry.VariantsByDefId.TryGetValue(building.Definition.Id.Name, out VariantPlacement placement)
-                && placement.Set.Layout is Layout.Static)
+            // Static sequence layouts (cutter etc.) footprint-track (#16); Dynamic network layouts grow/shrink
+            // a multi-tile chain.
+            if (TryStaticSet(building, out PieceVariantSet set))
             {
-                CommitSequenceStep(map, player, actions, building, placement.Set);
+                CommitSequenceStep(map, player, actions, building, set, cursor, oneStep);
                 return;
+            }
+
+            if (_magnitude <= 0)
+            {
+                return; // network drag returned to zero magnitude — nothing to commit
             }
 
             if (_grow)
@@ -327,35 +345,206 @@ namespace ExpandableX.Core
         }
 
         /// <summary>
-        /// Step a static sequence (cutter etc.) one stop in the gesture's direction: find the matching
-        /// expand/shrink option for the grabbed face and swap the building to that step's target layout base
-        /// definition at the same orientation, as one undoable action — the same move the old sequence HUD
-        /// buttons made. One step per gesture for now; mapping a drag's magnitude to several sequence steps
-        /// is a follow-up.
+        /// Commit a static sequence (cutter etc.) drag, footprint-tracking (#16): swap the building to the step
+        /// the gesture maps onto at the same orientation, as one undoable action. A drag lands on the
+        /// footprint-tracked step (possibly several stops in one gesture); a click (<paramref name="oneStep"/>)
+        /// moves exactly one step in the clicked cap's direction. A no-op schedules nothing.
         /// </summary>
-        private void CommitSequenceStep(IMapModel map, Player player, PlayerActionManager actions, BuildingModel building, PieceVariantSet set)
+        private void CommitSequenceStep(
+            IMapModel map, Player player, PlayerActionManager actions, BuildingModel building, PieceVariantSet set, float3 cursor, bool oneStep)
         {
-            ExpansionKind kind = _grow ? ExpansionKind.Expand : ExpansionKind.Shrink;
-            foreach (ExpansionOption option in SequenceEngine.OptionsFor(set.Registration, set.Layout))
+            Layout? targetLayout = oneStep
+                ? SequenceOneStep(building, set, _grow)
+                : SequenceTargetForDrag(building, set, cursor);
+
+            if (targetLayout is not Layout.Static target
+                || !TryResolveDefinition(target.Piece.BaseDefinitionId, out IBuildingDefinition? targetDefinition))
             {
-                if (option.Kind != kind
-                    || !option.Available
-                    || option.Direction.Rotate(building.Transform.Rotation) != _handle.Face
-                    || option.TargetLayout is not Layout.Static target
-                    || !TryResolveDefinition(target.Piece.BaseDefinitionId, out IBuildingDefinition? targetDefinition))
+                return;
+            }
+
+            // A sequence swaps to a different building definition at the same orientation (id-as-truth).
+            var swap = new ExpandableXSwapVariantAction(
+                map, player, building.Id,
+                building.Transform,
+                new GlobalTileTransform(building.Transform.Position, building.Transform.Rotation),
+                building.Configuration, building.Definition, targetDefinition);
+            actions.TryScheduleAction(swap);
+        }
+
+        /// <summary>
+        /// Footprint-tracking drag target (#16): the step the cursor's drag maps onto, or null for a no-op. The
+        /// building's far edge follows the cursor — the target is the cell the cursor sits in (ceil of the
+        /// cursor's depth), rounded to the nearest reachable step in the drag's direction. Growing rounds
+        /// <b>up</b> to the first step whose footprint reaches the cursor's cell; shrinking rounds <b>down</b>
+        /// to the first step at or within it. This stays consistent across gaps in the step depths — e.g. with
+        /// steps at depth 2 and 4 (no 3), entering the 3rd cell grows to the depth-4 step (and, when shrinking,
+        /// retreats to the depth-2 step) rather than sticking until the cursor crosses the whole gap. The
+        /// direction is set by the cursor's position relative to the current far edge (not mouse motion), so it
+        /// doesn't chatter. The grabbed face picks the sequence — forward grows, backward shrinks.
+        /// </summary>
+        private Layout? SequenceTargetForDrag(BuildingModel building, PieceVariantSet set, float3 cursor)
+        {
+            int currentDepth = FootprintDepth(building.Definition, building);
+            // The tile the cursor sits in has its outer edge at ceil(depth) — that's where the far edge wants to be.
+            int desired = math.clamp((int)math.ceil(CursorDepthAlongFace(building, cursor)), 1, currentDepth + MaxDragTiles);
+            if (desired == currentDepth)
+            {
+                return null; // cursor still within the current step's tile — no change
+            }
+
+            ExpansionKind kind = desired > currentDepth ? ExpansionKind.Expand : ExpansionKind.Shrink;
+            if (kind == ExpansionKind.Expand ? !_handle.CanGrow : !_handle.CanShrink)
+            {
+                return null;
+            }
+
+            if (MatchingSequence(building, set) is not { } sequence)
+            {
+                return null;
+            }
+
+            // Reachable steps are nearest-first (grow = increasing depth, shrink = decreasing). Grow picks the
+            // first step whose depth reaches the cursor's cell (>= desired); shrink the first at/within it
+            // (<= desired). If the cursor is past the end of the ladder, clamp to the furthest reachable step.
+            Layout? furthest = null;
+            foreach (Layout candidate in SequenceEngine.ReachableLadder(sequence, set.Layout, kind))
+            {
+                if (candidate is not Layout.Static staticStep
+                    || !TryResolveDefinition(staticStep.Piece.BaseDefinitionId, out IBuildingDefinition? definition))
                 {
                     continue;
                 }
 
-                // A sequence swaps to a different building definition at the same orientation (id-as-truth).
-                var swap = new ExpandableXSwapVariantAction(
-                    map, player, building.Id,
-                    building.Transform,
-                    new GlobalTileTransform(building.Transform.Position, building.Transform.Rotation),
-                    building.Configuration, building.Definition, targetDefinition);
-                actions.TryScheduleAction(swap);
+                furthest = candidate;
+                int depth = FootprintDepth(definition, building);
+                bool reached = kind == ExpansionKind.Expand ? depth >= desired : depth <= desired;
+                if (reached)
+                {
+                    return candidate;
+                }
+            }
+
+            return furthest;
+        }
+
+        /// <summary>The nearest reachable step one stop from the current layout in <paramref name="grow"/>'s
+        /// direction along the grabbed face's sequence, or null — the target for a click (which moves one step).</summary>
+        private Layout? SequenceOneStep(BuildingModel building, PieceVariantSet set, bool grow)
+        {
+            if ((grow ? !_handle.CanGrow : !_handle.CanShrink) || MatchingSequence(building, set) is not { } sequence)
+            {
+                return null;
+            }
+
+            IReadOnlyList<Layout> ladder = SequenceEngine.ReachableLadder(
+                sequence, set.Layout, grow ? ExpansionKind.Expand : ExpansionKind.Shrink);
+            return ladder.Count > 0 ? ladder[0] : null;
+        }
+
+        /// <summary>The registration's sequence whose local direction rotates to the grabbed face, if any.</summary>
+        private Expansion.Sequence? MatchingSequence(BuildingModel building, PieceVariantSet set)
+        {
+            foreach (Expansion expansion in set.Registration.Expansions)
+            {
+                if (expansion is Expansion.Sequence sequence
+                    && sequence.Direction.Rotate(building.Transform.Rotation) == _handle.Face)
+                {
+                    return sequence;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// How many tiles <paramref name="definition"/>'s footprint spans forward along the grabbed face axis
+        /// when placed at <paramref name="building"/>'s transform — the far edge's depth from the fixed input
+        /// edge at the origin tile (1 for a 1x1, 2 for a 2x1 extending one tile out, …). A static sequence
+        /// keeps the origin tile fixed and grows forward (no re-anchoring), so this depth is what the cursor
+        /// tracks. Assumes the origin tile is the anchored back edge — the same invariant the swap relies on.
+        /// </summary>
+        private int FootprintDepth(IBuildingDefinition definition, BuildingModel building)
+        {
+            GlobalTileCoordinate origin = building.Transform.Position;
+            float3 originCenter = (float3)origin.ToCenter_W();
+            float3 step = (float3)origin.Move(_handle.Face).ToCenter_W() - originCenter;
+            float tileLength = math.length(step);
+            if (tileLength < 1e-3f)
+            {
+                return 1;
+            }
+
+            float3 stepUnit = step / tileLength;
+            float maxProjection = 0f;
+#pragma warning disable CS0618
+            TileVector[] tiles = definition.ConnectorData.Tiles;
+#pragma warning restore CS0618
+            foreach (TileVector local in tiles)
+            {
+                GlobalTileCoordinate tile = local.ToGlobal(building.Transform);
+                float projection = math.dot((float3)tile.ToCenter_W() - originCenter, stepUnit) / tileLength;
+                maxProjection = math.max(maxProjection, projection);
+            }
+
+            return (int)math.round(maxProjection) + 1;
+        }
+
+        /// <summary>
+        /// The cursor's absolute depth along the grabbed face axis, in tiles from the footprint's fixed back
+        /// edge (that back edge = depth 0; the origin tile spans depth 0→1, so its centre is 0.5). The far edge
+        /// of a step at footprint depth <c>d</c> sits at depth <c>d</c>, so ceil(this) is the outer edge of the
+        /// tile the cursor is in — where the far edge should follow to.
+        /// </summary>
+        private float CursorDepthAlongFace(BuildingModel building, float3 cursor)
+        {
+            float3 originCenter = (float3)building.Transform.Position.ToCenter_W();
+            float3 axis = (float3)building.Transform.Position.Move(_handle.Face).ToCenter_W() - originCenter;
+            float tileLength = math.length(axis);
+            if (tileLength < 1e-3f)
+            {
+                return 0.5f;
+            }
+
+            float3 axisUnit = axis / tileLength;
+            return math.dot(cursor - originCenter, axisUnit) / tileLength + 0.5f;
+        }
+
+        /// <summary>
+        /// Preview a static-sequence drag as the footprint-tracked target step's blueprint ghost at the
+        /// building's transform (#16). The whole building is replaced on commit, so it renders as a "valid
+        /// replacement" (amber) — the building you'll get. A shrink shows the smaller result; per-tile removal
+        /// highlighting isn't done here (the solid building still draws underneath).
+        /// </summary>
+        private void DrawSequenceStepPreview(FrameDrawOptions options, BuildingModel building, PieceVariantSet set, float3 cursor)
+        {
+            if (SequenceTargetForDrag(building, set, cursor) is not Layout.Static target
+                || !TryResolveDefinition(target.Piece.BaseDefinitionId, out IBuildingDefinition? targetDefinition))
+            {
                 return;
             }
+
+            DrawGhosts(options, new[]
+            {
+                new GhostPiece(
+                    targetDefinition,
+                    new GlobalTileTransform(building.Transform.Position, building.Transform.Rotation),
+                    GhostKind.Changed),
+            });
+        }
+
+        /// <summary>The building's registered static piece set, when it's a static-sequence layout.</summary>
+        private bool TryStaticSet(BuildingModel building, out PieceVariantSet set)
+        {
+            if (_registry.VariantsByDefId.TryGetValue(building.Definition.Id.Name, out VariantPlacement placement)
+                && placement.Set.Layout is Layout.Static)
+            {
+                set = placement.Set;
+                return true;
+            }
+
+            set = null!;
+            return false;
         }
 
         private bool TryResolveDefinition(string definitionId, [NotNullWhen(true)] out IBuildingDefinition? definition)
