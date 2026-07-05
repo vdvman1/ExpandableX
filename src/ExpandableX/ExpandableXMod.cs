@@ -208,7 +208,13 @@ public class ExpandableXMod : IMod
                 ConnectorSlotSpec.Range.Of<BuildingSignalOutput>("out", gameplayRoles, SlotRole.Output),
             },
             LocalPredicates: Array.Empty<ISlotPredicate>(),
-            VariantOverrides: new Dictionary<string, string> { ["IIDO"] = "LogicGateAndInternalVariant" });
+            VariantOverrides: new Dictionary<string, string> { ["IIDO"] = "LogicGateAndInternalVariant" },
+            Models: AndGateModels(),
+            // The configurable base (ExpandableXAndNetworkBase) carries 3 inputs but its model was cloned
+            // from the 2-input base-game AND, so compose the base's model too or the 3rd-input bridge is
+            // missing. (The 2-input default reaches the base-game AND via the IIDO override, which keeps
+            // its own model.)
+            ComposeBaseModel: true);
 
         var layout = new Layout.Dynamic(
             LayoutId: "AndGate.Network",
@@ -232,6 +238,36 @@ public class ExpandableXMod : IMod
             RegistrationId: "AndGate",
             Layouts: new Layout[] { layout },
             Expansions: new[] { Expand.Network(layout) }));
+    }
+
+    /// <summary>
+    /// The AND gate's composed model (ADR-0016). One clean body (per-gate, under LogicGate/And) plus the
+    /// shared logic-gate connector bridges (under LogicGate/Common). Bridges key on the common
+    /// <see cref="BuildingSignalIO"/> base + role, not the specific input/output type, because a tri-state
+    /// slot may be flipped: the composer reports each slot's <b>base</b> connector type, so an input face
+    /// switched to Output must still resolve the output bridge (and vice versa). The join/seam reuses the
+    /// input connector — the closest thing to a two-way connection without a new model. Authored
+    /// canonically (connector on the East/+X face); the framework rotates a copy onto each face and per the
+    /// piece's GridRotation. Up to 6 LODs per file (Main_LOD0..5, etc.); missing levels reuse the nearest
+    /// lower one, so exporting more LODs needs no code change. No custom blueprint — the gate isn't
+    /// animated, so the auto-derived blueprint (from the composed body) is correct.
+    /// </summary>
+    private static ModelPieceSet AndGateModels()
+    {
+        ModFolderLocator gate = ModDirectoryLocator.CreateLocator<ExpandableXMod>()
+            .SubLocator("Resources").SubLocator("LogicGate");
+        ModFolderLocator common = gate.SubLocator("Common");
+        ModFolderLocator and = gate.SubLocator("And");
+
+        IModelMesh input = ModelMesh.FromFiles(Enumerable.Range(0, 6).Select(i => common.SubPath($"InputConnector_LOD{i}.fbx")).ToArray());
+        IModelMesh output = ModelMesh.FromFiles(Enumerable.Range(0, 6).Select(i => common.SubPath($"OutputConnector_LOD{i}.fbx")).ToArray());
+
+        return ModelPieceSet
+            .WithBody(ModelMesh.FromFiles(Enumerable.Range(0, 6).Select(i => and.SubPath($"Main_LOD{i}.fbx")).ToArray()))
+            .Bridge<BuildingSignalIO>(SlotRole.Input, input)
+            .Bridge<BuildingSignalIO>(SlotRole.Output, output)
+            .Seam(input)
+            .Build();
     }
 
     private static PieceSpec NoSlotPiece(string baseDefinitionId) => new PieceSpec(
