@@ -26,26 +26,61 @@ public class ExpandableXMod : IMod
 
     private static void RegisterPainter()
     {
-        // Painter: a single static layout whose three visible paint junctions are toggleable
-        // {Enabled, Disabled} slots. At least one must stay enabled (an all-disabled painter is
-        // pointless). See CONTEXT.md "Painter" and the Role / Connector slot entries.
+        // Painter: two registrations, one per definition in the PainterDefaultVariant group — the base and
+        // its mirror. Each is a single static layout whose three visible paint junctions are toggleable
+        // {Enabled, Disabled} slots, with at least one always enabled (an all-disabled painter is
+        // pointless). Mirroring is a separate MetaBuildingDefinition the game swaps to, so it gets its own
+        // registration (ADR-0015); Left/Right are physically swapped on the mirror, so its labels swap too.
+        // The exact visible-index -> face mapping is to be confirmed in-game. See CONTEXT.md "Painter",
+        // "Slot label", and the Role / Connector slot entries.
+        RegisterPainterVariant(
+            registrationId: "PainterDefaultVariant",
+            layoutId: "Painter.Default",
+            baseDefinitionId: "PainterDefaultInternalVariant",
+            paintLabel: index => index switch
+            {
+                0 => "Left Fluid",
+                1 => "Bottom Fluid",
+                2 => "Right Fluid",
+                _ => $"Fluid {index}",
+            });
+
+        RegisterPainterVariant(
+            registrationId: "PainterDefaultVariantMirrored",
+            layoutId: "Painter.DefaultMirrored",
+            baseDefinitionId: "PainterDefaultInternalVariantMirrored",
+            paintLabel: index => index switch
+            {
+                0 => "Right Fluid",
+                1 => "Bottom Fluid",
+                2 => "Left Fluid",
+                _ => $"Fluid {index}",
+            });
+    }
+
+    /// <summary>
+    /// Registers one painter definition (base or mirror) as a single toggleable-junction static layout.
+    /// The only difference between the two is the base definition id and the per-index paint label
+    /// (Left/Right swap on the mirror), so both share this body.
+    /// </summary>
+    private static void RegisterPainterVariant(
+        string registrationId, string layoutId, string baseDefinitionId, Func<int, string> paintLabel)
+    {
         ExpandableXRegistry.Instance.Register(new Registration(
-            RegistrationId: "PainterDefaultVariant",
+            RegistrationId: registrationId,
             Layouts: new Layout[]
             {
                 new Layout.Static(
-                    LayoutId: "Painter.Default",
+                    LayoutId: layoutId,
                     Piece: new PieceSpec(
-                        // The configurable-base *definition* inside the "PainterDefaultVariant" group
-                        // (confirmed in-game). The group also contains a mirrored definition
-                        // (PainterDefaultInternalVariantMirrored) which would be its own registration.
-                        BaseDefinitionId: "PainterDefaultInternalVariant",
+                        BaseDefinitionId: baseDefinitionId,
                         SlotSpecs: new ConnectorSlotSpec[]
                         {
                             ConnectorSlotSpec.Range.Of<BuildingFluidJunction>(
                                 idPrefix: "paint",
                                 allowedRoles: new[] { SlotRole.Enabled, SlotRole.Disabled },
-                                defaultRole: SlotRole.Enabled),
+                                defaultRole: SlotRole.Enabled,
+                                labelAt: paintLabel),
                         },
                         LocalPredicates: new[]
                         {
