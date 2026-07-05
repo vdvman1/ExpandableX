@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+NOTE: The MIT license above applies to ExpandableX's own source code only. The
+3D model / art assets under `Resources/` and `src/ExpandableX/Resources/` are
+derivative works based on assets owned by tobspr Games (Shapez 2). They are NOT
+licensed under the MIT terms above and remain subject to tobspr Games' rights;
+see `Resources/README.md`.
