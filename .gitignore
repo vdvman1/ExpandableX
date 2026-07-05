@@ -436,3 +436,11 @@ docs/Mod Support - Art - How to create an asset_files/
 
 # Project-specific: decompiled game assemblies for local research only (not redistributed)
 .decompiled/
+docs/*.psd
+docs/*.blend
+
+# Project-specific: meshes/assets extracted from the game for local modelling reference (not redistributed)
+.extracted/
+
+# Blender auto-save backups
+*.blend1
