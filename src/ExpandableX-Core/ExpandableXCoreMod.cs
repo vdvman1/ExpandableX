@@ -22,6 +22,10 @@ public class ExpandableXCoreMod : IMod
     public ExpandableXCoreMod(ILogger logger)
     {
         ExpandableXRegistry.Initialize(logger);
+        // Buildings phase: capture the mesh cache + theme so the later synthesis phase can bake
+        // composed variant models (ADR-0016). Runs before the simulation-systems rewirer below.
+        GameRewirers.AddRewirer<IBuildingsRewirer>(
+            new ExpandableXBuildingsRewirer(logger, ExpandableXRegistry.Instance));
         GameRewirers.AddRewirer<ISimulationSystemsRewirer>(
             new ExpandableXSimulationSystemsRewirer(logger, ExpandableXRegistry.Instance));
         GameRewirers.AddRewirer<IBuildingModulesRewirer>(
