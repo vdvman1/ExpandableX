@@ -26,6 +26,10 @@ namespace ExpandableX.Core
     /// rotation — the game's own end-cap transform — plus the author's optional per-bridge offset (or an
     /// explicit per-slot pivot). The load-time orientation correction lives in the <see cref="ModelMesh"/>
     /// loader, so meshes reaching here are already in game orientation.
+    ///
+    /// For a mirrored base, each source mesh is reflected via <see cref="IMeshCache.GenerateMirroredMesh"/>
+    /// and placed against that base's already-mirrored connector data — an exact reflection of the
+    /// non-mirrored model, so a single <see cref="ModelPieceSet"/> serves both a base and its mirror.
     /// </summary>
     internal static class VariantModelComposer
     {
@@ -41,11 +45,22 @@ namespace ExpandableX.Core
             ModelPieceSet models,
             IMeshCache meshCache,
             VisualThemeBaseResources theme,
+            bool mirrored,
             ILogger logger)
         {
             try
             {
-                ILODMesh body = models.Body.Resolve(meshCache);
+                // A mirrored variant reuses the same authored meshes, reflected by the game's own mesh
+                // mirror (no separate mirrored FBX). Placement uses this base's connector data, which is
+                // already mirrored, so reflecting each source mesh + normal placement = an exact reflection
+                // of the non-mirrored composed model.
+                ILODMesh Resolve(IModelMesh mesh)
+                {
+                    ILODMesh lod = mesh.Resolve(meshCache);
+                    return mirrored ? meshCache.GenerateMirroredMesh(lod) : lod;
+                }
+
+                ILODMesh body = Resolve(models.Body);
 
                 // Gather the (mesh, transform) of each live connector's bridge for this variant.
                 var bridges = new List<(ILODMesh Mesh, Matrix4x4 Transform)>();
@@ -69,7 +84,10 @@ namespace ExpandableX.Core
                         continue; // author supplied no piece for this combination
                     }
 
-                    Matrix4x4 offsetMatrix = Matrix4x4.Translate(new Vector3(bridge.Offset.x, bridge.Offset.y, bridge.Offset.z));
+                    // Offset is in the mesh's own frame; reflecting the mesh reflects its X, so the offset's
+                    // X reflects too to stay exact under mirroring.
+                    float offsetX = mirrored ? -bridge.Offset.x : bridge.Offset.x;
+                    Matrix4x4 offsetMatrix = Matrix4x4.Translate(new Vector3(offsetX, bridge.Offset.y, bridge.Offset.z));
                     Matrix4x4 transform;
                     if (bridge.InPlace)
                     {
@@ -85,7 +103,7 @@ namespace ExpandableX.Core
                         transform = FastMatrix.TranslateRotate(position, pivot.Direction) * offsetMatrix;
                     }
 
-                    bridges.Add((bridge.Mesh.Resolve(meshCache), transform));
+                    bridges.Add((Resolve(bridge.Mesh), transform));
                 }
 
                 ILODMesh composed = CombineLayerMesh(variantIdName, body, bridges, meshCache);
@@ -102,7 +120,7 @@ namespace ExpandableX.Core
                 // connectors with real bridge geometry (not just the auto-added end caps). Null => derive
                 // the blueprint from the composed body, which already carries the bridges.
                 ILODMesh? blueprintOverride = models.Blueprint is { } blueprint
-                    ? CombineLayerMesh($"{variantIdName}_blueprint", blueprint.Resolve(meshCache), bridges, meshCache)
+                    ? CombineLayerMesh($"{variantIdName}_blueprint", Resolve(blueprint), bridges, meshCache)
                     : null;
 
                 ILODMesh isolated = BuildingMeshGenerator.GenerateIsolatedBlueprintMesh(

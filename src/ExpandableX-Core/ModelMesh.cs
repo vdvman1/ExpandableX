@@ -10,11 +10,12 @@ namespace ExpandableX.Core
     public sealed record ModelImportOptions
     {
         /// <summary>
-        /// Rotation (Euler degrees) applied on load to correct the FBX root transform the game's mesh
-        /// loader omits (see the painter extraction README). Default <b>+90° about X</b> (Blender Z-up →
-        /// game Y-up), confirmed against prior testing — still worth re-verifying with a live round-trip.
+        /// Optional rotation (Euler degrees) applied on load to correct the FBX root transform the game's
+        /// mesh loader omits (see the painter extraction README). <b>Default none</b>: some Blender FBX
+        /// exports already bake the Z-up→game-Y-up conversion (no fix needed), others need <b>+90° about
+        /// X</b> — set this per model when a round-trip comes in rotated.
         /// </summary>
-        public float3 RotationEulerDegrees { get; init; } = new float3(90f, 0f, 0f);
+        public float3 RotationEulerDegrees { get; init; } = new float3(0f, 0f, 0f);
     }
 
     /// <summary>
@@ -109,16 +110,34 @@ namespace ExpandableX.Core
                 return _cached;
             }
 
-            /// <summary>Build a 6-LOD mesh, using each supplied level or reusing the nearest lower one via the LOD builder.</summary>
+            /// <summary>
+            /// Build a 6-LOD mesh whose <c>TryGet(lod)</c> returns level <c>lod</c> directly, reusing the
+            /// nearest lower level for gaps. We build a <see cref="RuntimeLODMesh"/> (index-direct) rather
+            /// than ShapezShifter's <c>MeshLod</c>/<c>LOD6Mesh</c>: that helper assigns the supplied meshes
+            /// to the struct's named fields in declaration order (…Minimal, Overview, Reduced = 3,4,5), but
+            /// the game reads those fields at a different numeric order for LODs 3–5, which permutes distinct
+            /// per-LOD meshes (render-LOD3 would show the level-5 mesh). Index-direct sidesteps that.
+            /// </summary>
             private static ILODMesh BuildLodMesh(Mesh[] byLod)
             {
-                ILodMesh1Builder b0 = MeshLod.Create().AddLod0Mesh(byLod[0]);
-                ILodMesh2Builder b1 = byLod[1] != null ? b0.AddLod1Mesh(byLod[1]) : b0.UseLod0AsLod1();
-                ILodMesh3Builder b2 = byLod[2] != null ? b1.AddLod2Mesh(byLod[2]) : b1.UseLod1AsLod2();
-                ILodMesh4Builder b3 = byLod[3] != null ? b2.AddLod3Mesh(byLod[3]) : b2.UseLod2AsLod3();
-                ILodMesh5Builder b4 = byLod[4] != null ? b3.AddLod4Mesh(byLod[4]) : b3.UseLod3AsLod4();
-                ILodMeshBuilder b5 = byLod[5] != null ? b4.AddLod5Mesh(byLod[5]) : b4.UseLod4AsLod5();
-                return b5.BuildLod6Mesh();
+                var refs = new IMeshReference[LodCount];
+                IMeshReference last = null;
+                for (int lod = 0; lod < LodCount; lod++)
+                {
+                    if (byLod[lod] != null)
+                    {
+                        last = new UnityMeshReference
+                        {
+                            _Mesh = byLod[lod],
+                            _Handle = new UnityMeshReference.InitializedHandle(byLod[lod]),
+                            _Initialized = true,
+                        };
+                    }
+
+                    refs[lod] = last; // reuse the nearest lower level for a missing one
+                }
+
+                return new RuntimeLODMesh(refs);
             }
 
             private static void ApplyRotation(Mesh mesh, Quaternion q)

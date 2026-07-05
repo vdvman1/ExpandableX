@@ -332,9 +332,13 @@ namespace ExpandableX.Core
                 return null;
             }
 
+            // A mirrored base (its own MetaBuildingDefinition) composes from the same authored meshes,
+            // reflected by the game's mesh mirror — so one ModelPieceSet serves both the base and its mirror.
+            bool mirrored = baseDef.CustomData.TryGet(out IBuildingMirroringDefinition mirroring) && mirroring.IsMirrored;
+
             return VariantModelComposer.TryCompose(
                 variantIdName, baseDraw, synthData, expansion.ExpandedSlots, variant.SlotState,
-                resolver, models, meshCache, theme, _logger);
+                resolver, models, meshCache, theme, mirrored, _logger);
         }
 
         /// <summary>
