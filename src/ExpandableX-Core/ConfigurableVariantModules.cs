@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Core.Localization;
 using Game.Core.Coordinates;
 using ILogger = Core.Logging.ILogger;
@@ -60,7 +61,21 @@ namespace ExpandableX.Core
                     ? read
                     : null;
 
-            foreach (ConnectorSlot slot in set.Slots)
+            // Slot label + order by layout kind (CONTEXT.md "Slot label", ADR-0015). A Dynamic piece
+            // carries SlotFaceDirections (local face per slot); its slots are labelled by the world-absolute
+            // compass direction the connector points in (local face rotated by the placed building's
+            // rotation) and ordered clockwise from North. A Static layout has no face map, so its slots keep
+            // registration order and take the author's label (falling back to the id when unlabelled).
+            GridRotation rotation = building.Transform.Rotation;
+            IReadOnlyDictionary<string, TileDirection>? slotFaces = set.SlotFaceDirections;
+            IEnumerable<ConnectorSlot> orderedSlots = slotFaces is null
+                ? set.Slots
+                : set.Slots.OrderBy(s =>
+                    slotFaces.TryGetValue(s.Id, out TileDirection localFace)
+                        ? ClockwiseFromNorthRank(localFace.Rotate(rotation))
+                        : int.MaxValue);
+
+            foreach (ConnectorSlot slot in orderedSlots)
             {
                 SlotRole currentRole = placement.SlotState[slot.Id];
 
@@ -71,7 +86,10 @@ namespace ExpandableX.Core
                     continue;
                 }
 
-                yield return new HUDSidePanelModuleInfoText.Data(new RawText(slot.Id));
+                string label = slotFaces is not null && slotFaces.TryGetValue(slot.Id, out TileDirection face)
+                    ? face.Rotate(rotation).ToString()
+                    : slot.Label ?? slot.Id;
+                yield return new HUDSidePanelModuleInfoText.Data(new RawText(label));
 
                 var buttons = new List<PlacementKeybindingHintData>(slot.AllowedRoles.Count);
 
@@ -264,6 +282,13 @@ namespace ExpandableX.Core
 
             _logger.Info.Log($"ExpandableX-Core: slot change: scheduled swap {currentDefName} -> {targetDefName}");
         }
+
+        /// <summary>
+        /// Ranks a world face for the HUD's clockwise-from-North slot order (North, East, South, West).
+        /// The game's <see cref="TileDirection"/> is East=0, South=1, West=2, North=3, so +1 mod 4 rotates
+        /// the sequence so North sorts first (ADR-0015).
+        /// </summary>
+        private static int ClockwiseFromNorthRank(TileDirection dir) => ((int)dir.Value + 1) % 4;
 
         private static IReadOnlyDictionary<string, SlotRole> WithRole(
             IReadOnlyDictionary<string, SlotRole> state, string slotId, SlotRole role)
